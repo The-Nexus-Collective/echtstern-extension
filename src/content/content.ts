@@ -1,3 +1,4 @@
+import { browser, hasBrowserLocalStorage } from '../shared/browserApi'
 import { buildNoRemovedReviewsEstimate, calculateEstimate } from '../shared/estimate'
 import { formatRating } from '../shared/format'
 import { getMessages, localeToIntl, resolveLocaleSetting, type Locale, type Messages } from '../shared/i18n'
@@ -561,8 +562,8 @@ const clearInjectedState = () => {
   latestSignature = ''
   latestResult = null
 
-  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-    void chrome.storage.local
+  if (hasBrowserLocalStorage() && browser) {
+    void browser.storage.local
       .remove(LATEST_ESTIMATE_STORAGE_KEY)
       .catch((error: unknown) => logUnexpectedExtensionError('Latest estimate clear failed', error))
   }
@@ -705,7 +706,7 @@ const renderPopupTrigger = (result: EstimateResult, thresholds: WarningThreshold
     trigger.addEventListener('click', (event) => {
       event.preventDefault()
       event.stopPropagation()
-      void chrome.runtime
+      void browser?.runtime
         .sendMessage({ type: 'OPEN_ECHTSTERN_POPUP' })
         .catch((error: unknown) => logUnexpectedExtensionError('Open popup message failed', error))
     })
@@ -795,7 +796,7 @@ const buildInlineCardElement = (
     card.addEventListener('click', (event) => {
       event.preventDefault()
       event.stopPropagation()
-      void chrome.runtime
+      void browser?.runtime
         .sendMessage({ type: 'OPEN_ECHTSTERN_POPUP' })
         .catch((error: unknown) => logUnexpectedExtensionError('Open popup message failed', error))
     })
@@ -871,7 +872,7 @@ const buildInlineCardElement = (
   card.addEventListener('click', (event) => {
     event.preventDefault()
     event.stopPropagation()
-    void chrome.runtime
+    void browser?.runtime
       .sendMessage({ type: 'OPEN_ECHTSTERN_POPUP' })
       .catch((error: unknown) => logUnexpectedExtensionError('Open popup message failed', error))
   })
@@ -963,7 +964,7 @@ const renderEstimateUi = (
 const persistLatestResult = async (result: EstimateResult) => {
   latestResult = result
 
-  if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+  if (!hasBrowserLocalStorage() || !browser) {
     return
   }
 
@@ -975,21 +976,21 @@ const persistLatestResult = async (result: EstimateResult) => {
   }
 
   try {
-    await chrome.storage.local.set({ [LATEST_ESTIMATE_STORAGE_KEY]: payload })
+    await browser.storage.local.set({ [LATEST_ESTIMATE_STORAGE_KEY]: payload })
   } catch (error) {
     logUnexpectedExtensionError('Latest estimate persist failed', error)
   }
 }
 
 const sendObservationViaBackground = async (payload: ObservationPayload): Promise<boolean> => {
-  if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
-    logTracking('Cannot send observation: chrome.runtime.sendMessage unavailable')
+  if (!browser?.runtime?.sendMessage) {
+    logTracking('Cannot send observation: runtime.sendMessage unavailable')
     return false
   }
 
   let response: unknown
   try {
-    response = await chrome.runtime.sendMessage({
+    response = await browser.runtime.sendMessage({
       type: 'SEND_ECHTSTERN_OBSERVATION',
       payload,
     })
@@ -1171,8 +1172,8 @@ observer = new MutationObserver((mutations) => {
 })
 observer.observe(document.documentElement, { childList: true, subtree: true })
 
-if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
-  chrome.storage.onChanged.addListener((changes, areaName) => {
+if (browser?.storage?.onChanged) {
+  browser.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === 'sync' && changes[SETTINGS_STORAGE_KEY]) {
       latestSignature = ''
       scheduleScan()

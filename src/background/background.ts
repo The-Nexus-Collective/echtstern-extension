@@ -1,12 +1,13 @@
+import { browser } from '../shared/browserApi'
 import { logTracking, postObservation, type ObservationPayload } from '../shared/tracking'
 
 type ECHTSTERNMessage =
   | { type?: 'OPEN_ECHTSTERN_POPUP' }
   | { type?: 'SEND_ECHTSTERN_OBSERVATION'; payload?: ObservationPayload }
 
-chrome.runtime.onMessage.addListener((message: ECHTSTERNMessage, _sender, sendResponse) => {
+browser?.runtime.onMessage.addListener((message: ECHTSTERNMessage, _sender, sendResponse) => {
   if (message.type === 'OPEN_ECHTSTERN_POPUP') {
-    void chrome.action.openPopup?.()
+    void browser?.action.openPopup?.()
     return false
   }
 

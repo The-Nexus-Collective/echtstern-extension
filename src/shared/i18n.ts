@@ -1,3 +1,5 @@
+import { browser } from './browserApi'
+
 export type Locale = 'de' | 'en'
 
 export type LocaleSetting = 'auto' | Locale
@@ -11,8 +13,8 @@ export const normalizeLocaleSetting = (value: unknown): LocaleSetting =>
 
 const browserLocale = (): Locale => {
   const language =
-    typeof chrome !== 'undefined' && chrome.i18n?.getUILanguage
-      ? chrome.i18n.getUILanguage()
+    browser?.i18n?.getUILanguage
+      ? browser.i18n.getUILanguage()
       : typeof navigator !== 'undefined'
         ? navigator.language
         : 'de'

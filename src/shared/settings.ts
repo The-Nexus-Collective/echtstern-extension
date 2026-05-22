@@ -1,4 +1,5 @@
 import { DEFAULT_LOCALE_SETTING, normalizeLocaleSetting, type LocaleSetting } from './i18n'
+import { browser, hasBrowserSyncStorage } from './browserApi'
 import type { InlineDisplayMode, StarValue, StarWeights, WarningThresholds } from './types'
 
 export const DEFAULT_WEIGHTS: StarWeights = {
@@ -48,7 +49,7 @@ export type ECHTSTERNSettings = {
 
 export const STAR_VALUES: StarValue[] = [1, 2, 3, 4, 5]
 
-const hasChromeStorage = () => typeof chrome !== 'undefined' && Boolean(chrome.storage?.sync)
+const hasChromeStorage = hasBrowserSyncStorage
 
 export const normalizeWeights = (weights: Partial<StarWeights> | undefined): StarWeights => {
   const normalized = { ...DEFAULT_WEIGHTS, ...weights }
@@ -161,7 +162,7 @@ export const averageStars = (weights: StarWeights): number =>
   STAR_VALUES.reduce((total, star) => total + star * (weights[star] / 100), 0)
 
 export const loadSettings = async (): Promise<ECHTSTERNSettings> => {
-  if (!hasChromeStorage()) {
+  if (!hasChromeStorage() || !browser) {
     return {
       weights: DEFAULT_WEIGHTS,
       defamationQuotaPercent: DEFAULT_DEFAMATION_QUOTA_PERCENT,
@@ -172,7 +173,7 @@ export const loadSettings = async (): Promise<ECHTSTERNSettings> => {
     }
   }
 
-  const data = await chrome.storage.sync.get(SETTINGS_STORAGE_KEY)
+  const data = await browser.storage.sync.get(SETTINGS_STORAGE_KEY)
   const saved = data[SETTINGS_STORAGE_KEY] as Partial<ECHTSTERNSettings> | undefined
   const weights = normalizeWeights(saved?.weights)
   return {
@@ -199,9 +200,9 @@ export const saveSettings = async (settings: ECHTSTERNSettings): Promise<void> =
     shareAnonymousStats: normalizeShareAnonymousStats(settings.shareAnonymousStats),
   }
 
-  if (!hasChromeStorage()) {
+  if (!hasChromeStorage() || !browser) {
     return
   }
 
-  await chrome.storage.sync.set({ [SETTINGS_STORAGE_KEY]: normalizedSettings })
+  await browser.storage.sync.set({ [SETTINGS_STORAGE_KEY]: normalizedSettings })
 }

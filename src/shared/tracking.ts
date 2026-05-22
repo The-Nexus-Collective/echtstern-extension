@@ -1,3 +1,4 @@
+import { browser, hasBrowserLocalStorage } from './browserApi'
 import type { EstimateResult, RemovedReviewRange, StarBreakdown } from './types'
 
 export const TRACKING_ENABLED_BY_DEFAULT = true
@@ -25,8 +26,6 @@ export type ObservationPayload = {
 
 type ObservationThrottleState = Record<string, string>
 
-const hasLocalStorage = () => typeof chrome !== 'undefined' && Boolean(chrome.storage?.local)
-
 const isExtensionContextInvalidatedError = (error: unknown): boolean =>
   error instanceof Error && error.message.includes('Extension context invalidated')
 
@@ -35,12 +34,12 @@ export const logTracking = (...args: unknown[]) => {
 }
 
 export const ensureInstallId = async (): Promise<string | null> => {
-  if (!hasLocalStorage()) {
+  if (!hasBrowserLocalStorage() || !browser) {
     return null
   }
 
   try {
-    const stored = await chrome.storage.local.get(INSTALL_ID_STORAGE_KEY)
+    const stored = await browser.storage.local.get(INSTALL_ID_STORAGE_KEY)
     const existing = stored[INSTALL_ID_STORAGE_KEY]
 
     if (typeof existing === 'string' && existing) {
@@ -48,7 +47,7 @@ export const ensureInstallId = async (): Promise<string | null> => {
     }
 
     const installId = crypto.randomUUID()
-    await chrome.storage.local.set({ [INSTALL_ID_STORAGE_KEY]: installId })
+    await browser.storage.local.set({ [INSTALL_ID_STORAGE_KEY]: installId })
     return installId
   } catch (error) {
     if (!isExtensionContextInvalidatedError(error)) {
@@ -62,12 +61,12 @@ export const shouldSendObservation = async (
   placeKey: string,
   now = new Date(),
 ): Promise<boolean> => {
-  if (!hasLocalStorage()) {
+  if (!hasBrowserLocalStorage() || !browser) {
     return false
   }
 
   try {
-    const stored = await chrome.storage.local.get(OBSERVATION_THROTTLE_STORAGE_KEY)
+    const stored = await browser.storage.local.get(OBSERVATION_THROTTLE_STORAGE_KEY)
     const state = (stored[OBSERVATION_THROTTLE_STORAGE_KEY] ?? {}) as ObservationThrottleState
     const lastSentAt = state[placeKey]
 
@@ -86,12 +85,12 @@ export const shouldSendObservation = async (
 }
 
 export const markObservationSent = async (placeKey: string, now = new Date()): Promise<void> => {
-  if (!hasLocalStorage()) {
+  if (!hasBrowserLocalStorage() || !browser) {
     return
   }
 
   try {
-    const stored = await chrome.storage.local.get(OBSERVATION_THROTTLE_STORAGE_KEY)
+    const stored = await browser.storage.local.get(OBSERVATION_THROTTLE_STORAGE_KEY)
     const state = (stored[OBSERVATION_THROTTLE_STORAGE_KEY] ?? {}) as ObservationThrottleState
     const cutoff = now.getTime() - OBSERVATION_THROTTLE_MS * 4
 
@@ -100,7 +99,7 @@ export const markObservationSent = async (placeKey: string, now = new Date()): P
     )
     nextState[placeKey] = now.toISOString()
 
-    await chrome.storage.local.set({ [OBSERVATION_THROTTLE_STORAGE_KEY]: nextState })
+    await browser.storage.local.set({ [OBSERVATION_THROTTLE_STORAGE_KEY]: nextState })
   } catch (error) {
     if (!isExtensionContextInvalidatedError(error)) {
       logTracking('Observation throttle write failed', error)

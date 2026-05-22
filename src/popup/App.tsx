@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toPng } from 'html-to-image'
 import HistogramChart from './HistogramChart'
+import { browser, hasBrowserLocalStorage } from '../shared/browserApi'
 import { buildNoRemovedReviewsEstimate, calculateEstimate } from '../shared/estimate'
 import {
   DEFAULT_DEFAMATION_QUOTA_PERCENT,
@@ -100,11 +101,11 @@ const formatRemovalRateRange = (result: EstimateResult, locale: Locale): string 
 }
 
 const loadLatestEstimate = async (): Promise<StoredLatestEstimate | null> => {
-  if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+  if (!hasBrowserLocalStorage() || !browser) {
     return null
   }
 
-  const data = await chrome.storage.local.get(LATEST_ESTIMATE_STORAGE_KEY)
+  const data = await browser.storage.local.get(LATEST_ESTIMATE_STORAGE_KEY)
   return (data[LATEST_ESTIMATE_STORAGE_KEY] as StoredLatestEstimate | undefined) ?? null
 }
 
@@ -179,7 +180,7 @@ const App = () => {
 
     void initialize()
 
-    if (typeof chrome === 'undefined' || !chrome.storage?.onChanged) {
+    if (!browser?.storage?.onChanged) {
       return undefined
     }
 
@@ -189,10 +190,12 @@ const App = () => {
       }
     }
 
-    chrome.storage.onChanged.addListener(handleStorageChange)
+    const extensionBrowser = browser
+
+    extensionBrowser.storage.onChanged.addListener(handleStorageChange)
 
     return () => {
-      chrome.storage.onChanged.removeListener(handleStorageChange)
+      extensionBrowser.storage.onChanged.removeListener(handleStorageChange)
     }
   }, [])
 

@@ -21,10 +21,15 @@
   ],
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && vite build --config vite.content.config.ts && vite build --config vite.background.config.ts",
+    "build": "pnpm run build:chrome",
+    "build:chrome": "tsc -b && vite build && vite build --config vite.content.config.ts && vite build --config vite.background.config.ts",
+    "build:firefox": "tsc -b && BROWSER_TARGET=firefox vite build && BROWSER_TARGET=firefox vite build --config vite.content.config.ts && BROWSER_TARGET=firefox vite build --config vite.background.config.ts",
     "typecheck": "tsc -b",
     "test": "vitest run",
     "lint": "eslint .",
+    "lint:firefox": "web-ext lint --source-dir dist",
+    "run:firefox": "web-ext run --source-dir dist",
+    "package:firefox": "web-ext build --source-dir dist --artifacts-dir artifacts",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -47,6 +52,7 @@
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.2",
     "vite": "^8.0.10",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.5",
+    "web-ext": "^8.10.0"
   }
 }
