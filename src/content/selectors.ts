@@ -7,6 +7,10 @@ export const GOOGLE_MAPS_SELECTORS = {
   ratingTextCandidates: ['.jANrlb .fontDisplayLarge', '[aria-label*="Sterne"]', '[aria-label*="stars"]'],
   reviewCountCandidates: ['.jANrlb .fontBodySmall', '[aria-label*="Rezensionen"]', '[aria-label*="reviews"]'],
   removedNoticeCandidates: ['.zpEcLb'],
+  businessCategoryCandidates: [
+    'button.DkEaL[jsaction$=".category"]',
+    'button[jsaction*=".category"]',
+  ],
   starBreakdownCandidates: [
     'tr.BHOKXe[aria-label]',
     '[role="img"][aria-label*="Stern"][aria-label*="Rezension"]',

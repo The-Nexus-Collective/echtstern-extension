@@ -11,6 +11,7 @@ export const OBSERVATION_THROTTLE_STORAGE_KEY = 'echtstern:observationThrottle'
 export type ObservationPayload = {
   placeKey: string
   placeName?: string
+  businessCategory?: string
   sourceUrl: string
   rating: number
   displayedRating: number
@@ -111,6 +112,7 @@ export const buildObservationPayload = ({
   result,
   placeKey,
   placeName,
+  businessCategory,
   sourceUrl,
   latitude,
   longitude,
@@ -120,6 +122,7 @@ export const buildObservationPayload = ({
   result: EstimateResult
   placeKey: string
   placeName?: string
+  businessCategory?: string
   sourceUrl: string
   latitude?: number
   longitude?: number
@@ -128,6 +131,7 @@ export const buildObservationPayload = ({
 }): ObservationPayload => ({
   placeKey,
   placeName,
+  businessCategory,
   sourceUrl,
   rating: result.originalRating,
   displayedRating: result.displayedRating ?? result.originalRating,

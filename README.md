@@ -196,6 +196,7 @@ the popup under `Settings` -> `Anonymous observation data`.
 The extension can send:
 
 - Google Maps place key and place name.
+- Google's visible business category for the place, when detected.
 - The Google Maps URL for the observed place.
 - Visible Google rating and visible review count.
 - Visible 1/2/3/4/5-star distribution, when detected.

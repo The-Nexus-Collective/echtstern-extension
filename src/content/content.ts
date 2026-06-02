@@ -55,6 +55,8 @@ let latestSignature = ''
 let latestResult: EstimateResult | null = null
 let latestPlaceKey = ''
 let latestPlaceName: string | undefined
+let latestBusinessCategoryPlaceKey = ''
+let latestBusinessCategory: string | undefined
 let debounceTimer: number | undefined
 let lastScanStartedAt = 0
 let observer: MutationObserver | null = null
@@ -459,6 +461,22 @@ const normalizePlaceName = (value: string | null | undefined): string | undefine
   return normalized || undefined
 }
 
+const normalizeBusinessCategory = (value: string | null | undefined): string | undefined => {
+  const normalized = value?.replace(/\s+/g, ' ').trim()
+  return normalized || undefined
+}
+
+const findVisibleBusinessCategory = (): string | undefined => {
+  for (const selector of GOOGLE_MAPS_SELECTORS.businessCategoryCandidates) {
+    const text = normalizeBusinessCategory(document.querySelector<HTMLElement>(selector)?.textContent)
+    if (text) {
+      return text
+    }
+  }
+
+  return undefined
+}
+
 const findVisiblePlaceName = (): string | undefined => {
   for (const selector of GOOGLE_MAPS_SELECTORS.placeNameCandidates) {
     const text = normalizePlaceName(document.querySelector<HTMLElement>(selector)?.textContent)
@@ -532,6 +550,8 @@ const rememberPlaceName = (): string | undefined => {
   if (placeKey && placeKey !== latestPlaceKey) {
     latestPlaceKey = placeKey
     latestPlaceName = undefined
+    latestBusinessCategoryPlaceKey = ''
+    latestBusinessCategory = undefined
   }
 
   if (visiblePlaceName) {
@@ -547,6 +567,20 @@ const findPlaceName = (): string | undefined => rememberPlaceName()
 
 const findPlaceKey = (): string | undefined =>
   findPlaceKeyFromUrl() ?? findPlaceName()
+
+const rememberBusinessCategory = (placeKey = findPlaceKey()): string | undefined => {
+  if (!placeKey) {
+    return undefined
+  }
+
+  const visibleBusinessCategory = findVisibleBusinessCategory()
+  if (visibleBusinessCategory) {
+    latestBusinessCategoryPlaceKey = placeKey
+    latestBusinessCategory = visibleBusinessCategory
+  }
+
+  return latestBusinessCategoryPlaceKey === placeKey ? latestBusinessCategory : undefined
+}
 
 const removeLegacyBanner = () => {
   document.getElementById(LEGACY_BANNER_ID)?.remove()
@@ -1036,6 +1070,7 @@ const maybeSendObservation = async (result: EstimateResult, locale: Locale, shar
     result,
     placeKey,
     placeName: findPlaceName(),
+    businessCategory: rememberBusinessCategory(placeKey),
     sourceUrl: location.href,
     latitude: coordinates?.latitude,
     longitude: coordinates?.longitude,
@@ -1062,6 +1097,7 @@ const maybeSendObservation = async (result: EstimateResult, locale: Locale, shar
 const scanAndRender = async () => {
   lastScanStartedAt = Date.now()
   rememberPlaceName()
+  rememberBusinessCategory()
   if (!isReviewsTabActive()) {
     clearInjectedState()
     return
