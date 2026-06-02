@@ -64,3 +64,10 @@ export type StoredLatestEstimate = {
   calculatedAt: string
   result: EstimateResult
 }
+
+export type StoredLatestContext = {
+  placeName?: string
+  sourceUrl: string
+  calculatedAt: string
+  status: 'outsideGermany'
+}

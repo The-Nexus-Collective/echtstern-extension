@@ -9,6 +9,7 @@ import {
   DEFAULT_SHARE_ANONYMOUS_STATS,
   DEFAULT_WARNING_THRESHOLDS,
   DEFAULT_WEIGHTS,
+  LATEST_CONTEXT_STORAGE_KEY,
   LATEST_ESTIMATE_STORAGE_KEY,
   adjustWarningThresholds,
   areWeightsValid,
@@ -27,7 +28,7 @@ import {
   type LocaleSetting,
   type Messages,
 } from '../shared/i18n'
-import type { EstimateResult, InlineDisplayMode, RemovedReviewRange, StarValue, StarWeights, StoredLatestEstimate, WarningThresholds } from '../shared/types'
+import type { EstimateResult, InlineDisplayMode, RemovedReviewRange, StarValue, StarWeights, StoredLatestContext, StoredLatestEstimate, WarningThresholds } from '../shared/types'
 import emptyStar from '../assets/empty_star.png'
 import fullStar from '../assets/full_star.png'
 import halfStar from '../assets/half_star.png'
@@ -109,6 +110,15 @@ const loadLatestEstimate = async (): Promise<StoredLatestEstimate | null> => {
   return (data[LATEST_ESTIMATE_STORAGE_KEY] as StoredLatestEstimate | undefined) ?? null
 }
 
+const loadLatestContext = async (): Promise<StoredLatestContext | null> => {
+  if (!hasBrowserLocalStorage() || !browser) {
+    return null
+  }
+
+  const data = await browser.storage.local.get(LATEST_CONTEXT_STORAGE_KEY)
+  return (data[LATEST_CONTEXT_STORAGE_KEY] as StoredLatestContext | undefined) ?? null
+}
+
 const downloadDataUrl = (dataUrl: string, filename: string) => {
   const link = document.createElement('a')
   link.href = dataUrl
@@ -167,15 +177,21 @@ const App = () => {
     shareAnonymousStats: DEFAULT_SHARE_ANONYMOUS_STATS,
   })
   const [latest, setLatest] = useState<StoredLatestEstimate | null>(null)
+  const [latestContext, setLatestContext] = useState<StoredLatestContext | null>(null)
   const [status, setStatus] = useState('')
   const locale = resolveLocaleSetting(settings.locale)
   const copy = getMessages(locale)
 
   useEffect(() => {
     const initialize = async () => {
-      const [loadedSettings, loadedLatest] = await Promise.all([loadSettings(), loadLatestEstimate()])
+      const [loadedSettings, loadedLatest, loadedLatestContext] = await Promise.all([
+        loadSettings(),
+        loadLatestEstimate(),
+        loadLatestContext(),
+      ])
       setSettings(loadedSettings)
       setLatest(loadedLatest)
+      setLatestContext(loadedLatestContext)
     }
 
     void initialize()
@@ -187,6 +203,9 @@ const App = () => {
     const handleStorageChange = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
       if (areaName === 'local' && changes[LATEST_ESTIMATE_STORAGE_KEY]) {
         setLatest((changes[LATEST_ESTIMATE_STORAGE_KEY].newValue as StoredLatestEstimate | undefined) ?? null)
+      }
+      if (areaName === 'local' && changes[LATEST_CONTEXT_STORAGE_KEY]) {
+        setLatestContext((changes[LATEST_CONTEXT_STORAGE_KEY].newValue as StoredLatestContext | undefined) ?? null)
       }
     }
 
@@ -368,7 +387,7 @@ const App = () => {
     }
   }
 
-  const heading = latest?.placeName ?? ""
+  const heading = latest?.placeName ?? latestContext?.placeName ?? ""
 
   return (
     <main className="popup-shell" ref={popupRef}>
@@ -402,7 +421,7 @@ const App = () => {
       </header>
 
       {activeTab === 'estimate' ? (
-        <EstimateTab copy={copy} latest={latest} locale={locale} result={recalculatedResult} />
+        <EstimateTab copy={copy} latest={latest} latestContext={latestContext} locale={locale} result={recalculatedResult} />
       ) : (
         <WeightsTab
           copy={copy}
@@ -430,11 +449,21 @@ const App = () => {
 type EstimateTabProps = {
   copy: Messages
   latest: StoredLatestEstimate | null
+  latestContext: StoredLatestContext | null
   locale: Locale
   result: EstimateResult | null
 }
 
-const EstimateTab = ({ copy, latest, locale, result }: EstimateTabProps) => {
+const EstimateTab = ({ copy, latest, latestContext, locale, result }: EstimateTabProps) => {
+  if (!latest && latestContext?.status === 'outsideGermany') {
+    return (
+      <section className="empty-state">
+        <h2>{copy.estimate.outsideGermanyTitle}</h2>
+        <p>{copy.estimate.outsideGermanyText}</p>
+      </section>
+    )
+  }
+
   if (!latest || !result) {
     return (
       <section className="empty-state">

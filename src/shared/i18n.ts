@@ -55,6 +55,8 @@ export const messages = {
       inlineReviewsWithAdded: (count: string, added: string) => `${count} + ${added} Berichte`,
       inlineNoRemovedChecked:
         'ECHTSTERN geprüft: Dieses Geschäft hat in den letzten 365 Tagen keine Bewertungen entfernen lassen.',
+      outsideGermanyNotice:
+        'Google lässt Bewertungen wegen Diffamierungsbeschwerden aktuell nur bei Profilen in Deutschland entfernen. Außerhalb Deutschlands zeigt ECHTSTERN deshalb keine Schätzung.',
       inlineOpenDetails: 'Details öffnen',
       inlineCardAriaLabel: (rating: string) =>
         `ECHTSTERN-Schätzung ${rating} Sterne. Zum Öffnen der Details klicken.`,
@@ -63,6 +65,9 @@ export const messages = {
       missingTitle: 'Kontext fehlt!',
       missingText:
         'Öffne in Google Maps das Rezensionen-Tab eines Geschäfts. ECHTSTERN nutzt Hinweise auf entfernte Bewertungen oder zeigt eine grüne Ampel, wenn keine gemeldet wurden.',
+      outsideGermanyTitle: 'Außerhalb Deutschlands',
+      outsideGermanyText:
+        'Google lässt Bewertungen wegen Diffamierungsbeschwerden aktuell nur bei Profilen in Deutschland entfernen. Für dieses Profil zeigt ECHTSTERN deshalb keine Schätzung.',
       echtsternEstimate: 'ECHTSTERN-Schätzung',
       googleRating: 'Google-Bewertung',
       matchesGoogleDetail: 'Entspricht der ungerundeten Google-Bewertung.',
@@ -182,6 +187,8 @@ export const messages = {
       inlineReviewsWithAdded: (count: string, added: string) => `${count} + ${added} reports`,
       inlineNoRemovedChecked:
         'ECHTSTERN checked: This business has not had any reviews removed in the last 365 days.',
+      outsideGermanyNotice:
+        'Google currently only allows reviews to be removed for defamation complaints on profiles in Germany. ECHTSTERN therefore does not show an estimate outside Germany.',
       inlineOpenDetails: 'Open details',
       inlineCardAriaLabel: (rating: string) =>
         `ECHTSTERN estimate ${rating} stars. Click to open details.`,
@@ -190,6 +197,9 @@ export const messages = {
       missingTitle: 'Missing context',
       missingText:
         'Open the reviews tab of a business in Google Maps. ECHTSTERN uses notices about removed reviews or shows a green status when none are reported.',
+      outsideGermanyTitle: 'Outside Germany',
+      outsideGermanyText:
+        'Google currently only allows reviews to be removed for defamation complaints on profiles in Germany. ECHTSTERN therefore does not show an estimate for this profile.',
       echtsternEstimate: 'ECHTSTERN estimate',
       googleRating: 'Google rating',
       matchesGoogleDetail: 'Matches the unrounded Google rating.',

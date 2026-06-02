@@ -2,7 +2,7 @@ import { browser, hasBrowserLocalStorage } from '../shared/browserApi'
 import { buildNoRemovedReviewsEstimate, calculateEstimate } from '../shared/estimate'
 import { formatRating } from '../shared/format'
 import { getMessages, localeToIntl, resolveLocaleSetting, type Locale, type Messages } from '../shared/i18n'
-import { LATEST_ESTIMATE_STORAGE_KEY, loadSettings, SETTINGS_STORAGE_KEY } from '../shared/settings'
+import { LATEST_CONTEXT_STORAGE_KEY, LATEST_ESTIMATE_STORAGE_KEY, loadSettings, SETTINGS_STORAGE_KEY } from '../shared/settings'
 import {
   TRACKING_ENABLED_BY_DEFAULT,
   type ObservationPayload,
@@ -27,6 +27,7 @@ import type {
   InlineDisplayMode,
   StarBreakdown,
   StarValue,
+  StoredLatestContext,
   StoredLatestEstimate,
   WarningThresholds,
 } from '../shared/types'
@@ -41,10 +42,20 @@ const TRIGGER_ID = 'echtstern-popup-trigger'
 const TRIGGER_SPACER_BEFORE_ID = 'echtstern-popup-trigger-spacer-before'
 const INLINE_CARD_ID = 'echtstern-inline-card'
 const INLINE_CARD_SPACER_BEFORE_ID = 'echtstern-inline-card-spacer-before'
+const OUTSIDE_GERMANY_CARD_ID = 'echtstern-outside-germany-card'
+const OUTSIDE_GERMANY_CARD_SPACER_BEFORE_ID = 'echtstern-outside-germany-card-spacer-before'
 const STATUS_BADGE_ID = 'echtstern-rating-status'
 const STYLE_ID = 'echtstern-content-style'
 
 const STAR_VALUES_DESC: StarValue[] = [5, 4, 3, 2, 1]
+const OUTSIDE_GERMANY_SIGNATURE = 'outside-germany'
+
+const GERMANY_BOUNDS = {
+  maxLatitude: 55.2,
+  maxLongitude: 15.1,
+  minLatitude: 47.2,
+  minLongitude: 5.8,
+} as const
 
 const formatWholeCount = (value: number, locale: Locale): string =>
   new Intl.NumberFormat(localeToIntl(locale), {
@@ -76,7 +87,7 @@ const isOwnNode = (node: Node): boolean => {
   const element = node instanceof Element ? node : node.parentElement
   return Boolean(
     element?.closest(
-      `#${LEGACY_BANNER_ID}, #${TRIGGER_ID}, #${TRIGGER_SPACER_BEFORE_ID}, #${INLINE_CARD_ID}, #${INLINE_CARD_SPACER_BEFORE_ID}, #${STATUS_BADGE_ID}, #${STYLE_ID}`,
+      `#${LEGACY_BANNER_ID}, #${TRIGGER_ID}, #${TRIGGER_SPACER_BEFORE_ID}, #${INLINE_CARD_ID}, #${INLINE_CARD_SPACER_BEFORE_ID}, #${OUTSIDE_GERMANY_CARD_ID}, #${OUTSIDE_GERMANY_CARD_SPACER_BEFORE_ID}, #${STATUS_BADGE_ID}, #${STYLE_ID}`,
     ),
   )
 }
@@ -176,7 +187,22 @@ const injectStyles = () => {
       outline-offset: 2px;
     }
 
-    #${INLINE_CARD_ID} .ec-card-header {
+    #${OUTSIDE_GERMANY_CARD_ID} {
+      background: #f8fafd;
+      border: 1px solid #dadce0;
+      border-radius: 12px;
+      color: #3c4043;
+      display: block;
+      font-family: Roboto, Arial, sans-serif;
+      margin: 12px;
+      padding: 12px;
+      text-align: left;
+      width: stretch;
+      width: -webkit-fill-available;
+    }
+
+    #${INLINE_CARD_ID} .ec-card-header,
+    #${OUTSIDE_GERMANY_CARD_ID} .ec-card-header {
       color: #202124;
       font-size: 11px;
       font-weight: 700;
@@ -184,6 +210,13 @@ const injectStyles = () => {
       margin: 0 0 8px;
       text-align: center;
       text-transform: uppercase;
+    }
+
+    #${OUTSIDE_GERMANY_CARD_ID} .ec-notice {
+      color: #5f6368;
+      font-size: 13px;
+      line-height: 18px;
+      margin: 0;
     }
 
     #${INLINE_CARD_ID} .ec-card-body {
@@ -542,6 +575,19 @@ const findCoordinatesFromUrl = (): { latitude: number; longitude: number } | und
   }
 }
 
+const isOutsideGermanyBounds = (coordinates: { latitude: number; longitude: number } | undefined): boolean => {
+  if (!coordinates) {
+    return false
+  }
+
+  return (
+    coordinates.latitude < GERMANY_BOUNDS.minLatitude ||
+    coordinates.latitude > GERMANY_BOUNDS.maxLatitude ||
+    coordinates.longitude < GERMANY_BOUNDS.minLongitude ||
+    coordinates.longitude > GERMANY_BOUNDS.maxLongitude
+  )
+}
+
 const rememberPlaceName = (): string | undefined => {
   const urlPlaceName = findPlaceNameFromUrl()
   const visiblePlaceName = findVisiblePlaceName()
@@ -592,14 +638,16 @@ const clearInjectedState = () => {
   document.getElementById(TRIGGER_SPACER_BEFORE_ID)?.remove()
   document.getElementById(INLINE_CARD_ID)?.remove()
   document.getElementById(INLINE_CARD_SPACER_BEFORE_ID)?.remove()
+  document.getElementById(OUTSIDE_GERMANY_CARD_ID)?.remove()
+  document.getElementById(OUTSIDE_GERMANY_CARD_SPACER_BEFORE_ID)?.remove()
   document.getElementById(STATUS_BADGE_ID)?.remove()
   latestSignature = ''
   latestResult = null
 
   if (hasBrowserLocalStorage() && browser) {
     void browser.storage.local
-      .remove(LATEST_ESTIMATE_STORAGE_KEY)
-      .catch((error: unknown) => logUnexpectedExtensionError('Latest estimate clear failed', error))
+      .remove([LATEST_CONTEXT_STORAGE_KEY, LATEST_ESTIMATE_STORAGE_KEY])
+      .catch((error: unknown) => logUnexpectedExtensionError('Latest context clear failed', error))
   }
 }
 
@@ -685,14 +733,72 @@ const removeInlineCard = () => {
   document.getElementById(INLINE_CARD_SPACER_BEFORE_ID)?.remove()
 }
 
+const removeOutsideGermanyCard = () => {
+  document.getElementById(OUTSIDE_GERMANY_CARD_ID)?.remove()
+  document.getElementById(OUTSIDE_GERMANY_CARD_SPACER_BEFORE_ID)?.remove()
+}
+
 const removePopupTrigger = () => {
   document.getElementById(TRIGGER_ID)?.remove()
   document.getElementById(TRIGGER_SPACER_BEFORE_ID)?.remove()
 }
 
+const renderOutsideGermanyNotice = (copy: Messages) => {
+  injectStyles()
+  removeLegacyBanner()
+
+  const ppcwl = findStarRatingSectionPpcwl()
+  if (!ppcwl) {
+    return
+  }
+
+  const existingCard = document.getElementById(OUTSIDE_GERMANY_CARD_ID)
+  const beforeExisting = existingCard?.previousElementSibling
+  const chainOk =
+    beforeExisting?.id === OUTSIDE_GERMANY_CARD_SPACER_BEFORE_ID && beforeExisting.previousElementSibling === ppcwl
+
+  if (
+    existingCard &&
+    chainOk &&
+    existingCard.textContent?.includes(copy.content.outsideGermanyNotice) &&
+    !document.getElementById(INLINE_CARD_ID) &&
+    !document.getElementById(TRIGGER_ID)
+  ) {
+    return
+  }
+
+  withObserverPaused(() => {
+    removeInlineCard()
+    removePopupTrigger()
+    removeOutsideGermanyCard()
+    document.getElementById(STATUS_BADGE_ID)?.remove()
+
+    const spacerTemplate = findAyRuiTemplate(ppcwl)
+    const spacerBefore = cloneAyRuiSpacer(spacerTemplate, OUTSIDE_GERMANY_CARD_SPACER_BEFORE_ID)
+    ppcwl.insertAdjacentElement('afterend', spacerBefore)
+
+    const card = document.createElement('div')
+    card.id = OUTSIDE_GERMANY_CARD_ID
+    card.setAttribute('role', 'status')
+
+    const header = document.createElement('div')
+    header.className = 'ec-card-header'
+    header.textContent = copy.common.echtstern
+    card.append(header)
+
+    const message = document.createElement('p')
+    message.className = 'ec-notice'
+    message.textContent = copy.content.outsideGermanyNotice
+    card.append(message)
+
+    spacerBefore.insertAdjacentElement('afterend', card)
+  })
+}
+
 const renderPopupTrigger = (result: EstimateResult, thresholds: WarningThresholds, copy: Messages, locale: Locale) => {
   injectStyles()
   removeLegacyBanner()
+  removeOutsideGermanyCard()
   renderRatingStatus(result, thresholds, copy, locale)
 
   const ppcwl = findStarRatingSectionPpcwl()
@@ -945,6 +1051,7 @@ const renderInlineCard = (
 ) => {
   injectStyles()
   removeLegacyBanner()
+  removeOutsideGermanyCard()
   renderRatingStatus(result, thresholds, copy, locale)
 
   const ppcwl = findStarRatingSectionPpcwl()
@@ -1010,9 +1117,30 @@ const persistLatestResult = async (result: EstimateResult) => {
   }
 
   try {
+    await browser.storage.local.remove(LATEST_CONTEXT_STORAGE_KEY)
     await browser.storage.local.set({ [LATEST_ESTIMATE_STORAGE_KEY]: payload })
   } catch (error) {
     logUnexpectedExtensionError('Latest estimate persist failed', error)
+  }
+}
+
+const persistOutsideGermanyContext = async () => {
+  if (!hasBrowserLocalStorage() || !browser) {
+    return
+  }
+
+  const payload: StoredLatestContext = {
+    placeName: findPlaceName(),
+    sourceUrl: location.href,
+    calculatedAt: new Date().toISOString(),
+    status: 'outsideGermany',
+  }
+
+  try {
+    await browser.storage.local.remove(LATEST_ESTIMATE_STORAGE_KEY)
+    await browser.storage.local.set({ [LATEST_CONTEXT_STORAGE_KEY]: payload })
+  } catch (error) {
+    logUnexpectedExtensionError('Latest context persist failed', error)
   }
 }
 
@@ -1100,6 +1228,28 @@ const scanAndRender = async () => {
   rememberBusinessCategory()
   if (!isReviewsTabActive()) {
     clearInjectedState()
+    return
+  }
+
+  const coordinates = findCoordinatesFromUrl()
+  if (isOutsideGermanyBounds(coordinates)) {
+    let settings: Awaited<ReturnType<typeof loadSettings>>
+    try {
+      settings = await loadSettings()
+    } catch (error) {
+      logUnexpectedExtensionError('Settings load failed', error)
+      return
+    }
+
+    const locale = resolveLocaleSetting(settings.locale)
+    const copy = getMessages(locale)
+    if (latestSignature !== OUTSIDE_GERMANY_SIGNATURE) {
+      clearInjectedState()
+      latestSignature = OUTSIDE_GERMANY_SIGNATURE
+    }
+    latestResult = null
+    renderOutsideGermanyNotice(copy)
+    await persistOutsideGermanyContext()
     return
   }
 

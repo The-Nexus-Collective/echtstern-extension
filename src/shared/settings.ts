@@ -37,6 +37,7 @@ type LegacyWarningThresholds = {
 
 export const SETTINGS_STORAGE_KEY = 'echtstern:settings'
 export const LATEST_ESTIMATE_STORAGE_KEY = 'echtstern:latestEstimate'
+export const LATEST_CONTEXT_STORAGE_KEY = 'echtstern:latestContext'
 
 export type ECHTSTERNSettings = {
   weights: StarWeights
