@@ -511,6 +511,9 @@ const normalizePlaceName = (value: string | null | undefined): string | undefine
   return normalized || undefined
 }
 
+const isGenericGoogleMapsTitle = (value: string | undefined): boolean =>
+  /^(ergebnisse|results|suchergebnisse|search results)$/i.test(value ?? '')
+
 const normalizeBusinessCategory = (value: string | null | undefined): string | undefined => {
   const normalized = value?.replace(/\s+/g, ' ').trim()
   return normalized || undefined
@@ -530,7 +533,7 @@ const findVisibleBusinessCategory = (): string | undefined => {
 const findVisiblePlaceName = (): string | undefined => {
   for (const selector of GOOGLE_MAPS_SELECTORS.placeNameCandidates) {
     const text = normalizePlaceName(document.querySelector<HTMLElement>(selector)?.textContent)
-    if (text) {
+    if (text && !isGenericGoogleMapsTitle(text)) {
       return text
     }
   }
@@ -552,7 +555,46 @@ const findPlaceNameFromUrl = (): string | undefined => {
   }
 }
 
+const findGoogleMapsCidFromUrl = (): string | undefined => {
+  try {
+    const url = new URL(location.href)
+    const existingCid = url.searchParams.get('cid')
+
+    if (existingCid && /^\d+$/.test(existingCid)) {
+      return existingCid
+    }
+  } catch {
+    // Fall through to extracting the raw hex CID from Google Maps' data segment.
+  }
+
+  const decodedUrl = (() => {
+    try {
+      return decodeURIComponent(location.href)
+    } catch {
+      return location.href
+    }
+  })()
+  const matches = [...decodedUrl.matchAll(/0x[0-9a-f]+:0x([0-9a-f]+)/gi)]
+  const cidHex = matches.at(-1)?.[1]
+
+  if (!cidHex) {
+    return undefined
+  }
+
+  try {
+    return BigInt(`0x${cidHex}`).toString(10)
+  } catch {
+    return undefined
+  }
+}
+
 const findPlaceKeyFromUrl = (): string | undefined => {
+  const cid = findGoogleMapsCidFromUrl()
+
+  if (cid) {
+    return `google-cid:${cid}`
+  }
+
   try {
     const path = new URL(location.href).pathname
     const match = path.match(/\/maps\/place\/([^/?#]+)/)
@@ -560,6 +602,24 @@ const findPlaceKeyFromUrl = (): string | undefined => {
   } catch {
     return undefined
   }
+}
+
+type PlaceIdentity = {
+  key: string
+  name?: string
+}
+
+const findPlaceIdentity = (): PlaceIdentity | undefined => {
+  const key = findPlaceKeyFromUrl()
+  const urlPlaceName = findPlaceNameFromUrl()
+  const visiblePlaceName = findVisiblePlaceName()
+  const name = urlPlaceName ?? visiblePlaceName
+
+  if (key) {
+    return { key, name }
+  }
+
+  return name ? { key: name, name } : undefined
 }
 
 const findCoordinatesFromUrl = (): { latitude: number; longitude: number } | undefined => {
@@ -606,9 +666,8 @@ const isOutsideGermanyBounds = (coordinates: { latitude: number; longitude: numb
 }
 
 const rememberPlaceName = (): string | undefined => {
-  const urlPlaceName = findPlaceNameFromUrl()
-  const visiblePlaceName = findVisiblePlaceName()
-  const placeKey = urlPlaceName ?? visiblePlaceName ?? ''
+  const identity = findPlaceIdentity()
+  const placeKey = identity?.key ?? ''
 
   if (placeKey && placeKey !== latestPlaceKey) {
     latestPlaceKey = placeKey
@@ -617,19 +676,17 @@ const rememberPlaceName = (): string | undefined => {
     latestBusinessCategory = undefined
   }
 
-  if (visiblePlaceName) {
-    latestPlaceName = visiblePlaceName
-  } else if (!latestPlaceName && urlPlaceName) {
-    latestPlaceName = urlPlaceName
+  if (identity?.name) {
+    latestPlaceName = identity.name
   }
 
-  return latestPlaceName ?? urlPlaceName
+  return latestPlaceKey === placeKey ? latestPlaceName : identity?.name
 }
 
 const findPlaceName = (): string | undefined => rememberPlaceName()
 
 const findPlaceKey = (): string | undefined =>
-  findPlaceKeyFromUrl() ?? findPlaceName()
+  findPlaceIdentity()?.key
 
 const rememberBusinessCategory = (placeKey = findPlaceKey()): string | undefined => {
   if (!placeKey) {
@@ -1192,15 +1249,15 @@ const maybeSendObservation = async (result: EstimateResult, locale: Locale, shar
     return
   }
 
-  const placeKey = findPlaceKey()
-  if (!placeKey) {
+  const placeIdentity = findPlaceIdentity()
+  if (!placeIdentity) {
     logTracking('Skipped observation: no place key found')
     return
   }
 
-  const shouldSend = await shouldSendObservation(placeKey)
+  const shouldSend = await shouldSendObservation(placeIdentity.key)
   if (!shouldSend) {
-    logTracking('Skipped observation: local throttle active', { placeKey })
+    logTracking('Skipped observation: local throttle active', { placeKey: placeIdentity.key })
     return
   }
 
@@ -1213,9 +1270,9 @@ const maybeSendObservation = async (result: EstimateResult, locale: Locale, shar
   const coordinates = findCoordinatesFromUrl()
   const payload = buildObservationPayload({
     result,
-    placeKey,
-    placeName: findPlaceName(),
-    businessCategory: rememberBusinessCategory(placeKey),
+    placeKey: placeIdentity.key,
+    placeName: placeIdentity.name,
+    businessCategory: rememberBusinessCategory(placeIdentity.key),
     sourceUrl: location.href,
     latitude: coordinates?.latitude,
     longitude: coordinates?.longitude,
@@ -1228,10 +1285,10 @@ const maybeSendObservation = async (result: EstimateResult, locale: Locale, shar
   try {
     const sent = await sendObservationViaBackground(payload)
     if (sent) {
-      await markObservationSent(placeKey)
-      logTracking('Observation sent and throttle updated', { placeKey })
+      await markObservationSent(placeIdentity.key)
+      logTracking('Observation sent and throttle updated', { placeKey: placeIdentity.key })
     } else {
-      logTracking('Observation not accepted by background/API', { placeKey })
+      logTracking('Observation not accepted by background/API', { placeKey: placeIdentity.key })
     }
   } catch (error) {
     // Tracking must never affect the Google Maps UI.
@@ -1366,6 +1423,10 @@ const scheduleScan = () => {
 const scheduleNavigationScans = () => {
   latestSignature = ''
   latestResult = null
+  latestPlaceKey = ''
+  latestPlaceName = undefined
+  latestBusinessCategoryPlaceKey = ''
+  latestBusinessCategory = undefined
   clearInjectedState()
   scheduleScan()
   window.setTimeout(scheduleScan, 1_000)
