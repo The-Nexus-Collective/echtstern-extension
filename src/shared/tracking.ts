@@ -25,7 +25,17 @@ export type ObservationPayload = {
   schemaVersion: 1
 }
 
-type ObservationThrottleState = Record<string, string>
+type ObservationThrottleEntry =
+  | string
+  | {
+      hasRemovedRange?: boolean
+      sentAt: string
+    }
+type ObservationThrottleState = Record<string, ObservationThrottleEntry>
+
+type ObservationThrottleOptions = {
+  hasRemovedRange?: boolean
+}
 
 const isExtensionContextInvalidatedError = (error: unknown): boolean =>
   error instanceof Error && error.message.includes('Extension context invalidated')
@@ -60,6 +70,7 @@ export const ensureInstallId = async (): Promise<string | null> => {
 
 export const shouldSendObservation = async (
   placeKey: string,
+  options: ObservationThrottleOptions = {},
   now = new Date(),
 ): Promise<boolean> => {
   if (!hasBrowserLocalStorage() || !browser) {
@@ -69,14 +80,20 @@ export const shouldSendObservation = async (
   try {
     const stored = await browser.storage.local.get(OBSERVATION_THROTTLE_STORAGE_KEY)
     const state = (stored[OBSERVATION_THROTTLE_STORAGE_KEY] ?? {}) as ObservationThrottleState
-    const lastSentAt = state[placeKey]
+    const lastEntry = state[placeKey]
+    const lastSentAt = typeof lastEntry === 'string' ? lastEntry : lastEntry?.sentAt
 
     if (!lastSentAt) {
       return true
     }
 
     const elapsed = now.getTime() - new Date(lastSentAt).getTime()
-    return !Number.isFinite(elapsed) || elapsed >= OBSERVATION_THROTTLE_MS
+    if (!Number.isFinite(elapsed) || elapsed >= OBSERVATION_THROTTLE_MS) {
+      return true
+    }
+
+    const lastHadRemovedRange = typeof lastEntry === 'string' ? false : lastEntry?.hasRemovedRange === true
+    return options.hasRemovedRange === true && !lastHadRemovedRange
   } catch (error) {
     if (!isExtensionContextInvalidatedError(error)) {
       logTracking('Observation throttle read failed', error)
@@ -85,7 +102,11 @@ export const shouldSendObservation = async (
   }
 }
 
-export const markObservationSent = async (placeKey: string, now = new Date()): Promise<void> => {
+export const markObservationSent = async (
+  placeKey: string,
+  options: ObservationThrottleOptions = {},
+  now = new Date(),
+): Promise<void> => {
   if (!hasBrowserLocalStorage() || !browser) {
     return
   }
@@ -96,9 +117,15 @@ export const markObservationSent = async (placeKey: string, now = new Date()): P
     const cutoff = now.getTime() - OBSERVATION_THROTTLE_MS * 4
 
     const nextState = Object.fromEntries(
-      Object.entries(state).filter(([, value]) => new Date(value).getTime() >= cutoff),
+      Object.entries(state).filter(([, value]) => {
+        const sentAt = typeof value === 'string' ? value : value.sentAt
+        return new Date(sentAt).getTime() >= cutoff
+      }),
     )
-    nextState[placeKey] = now.toISOString()
+    nextState[placeKey] = {
+      hasRemovedRange: options.hasRemovedRange === true,
+      sentAt: now.toISOString(),
+    }
 
     await browser.storage.local.set({ [OBSERVATION_THROTTLE_STORAGE_KEY]: nextState })
   } catch (error) {

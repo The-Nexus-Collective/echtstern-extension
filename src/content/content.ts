@@ -49,6 +49,19 @@ const STYLE_ID = 'echtstern-content-style'
 
 const STAR_VALUES_DESC: StarValue[] = [5, 4, 3, 2, 1]
 const OUTSIDE_GERMANY_SIGNATURE = 'outside-germany'
+const NO_REMOVALS_TRACKING_STABILIZATION_MS = 3_000
+
+type PreparedObservation = {
+  hasRemovedRange: boolean
+  payload: ObservationPayload
+  placeKey: string
+}
+
+type NoRemovalsTrackingCandidate = {
+  firstSeenAt: number
+  preparedObservation: PreparedObservation
+  signature: string
+}
 
 const GERMANY_BOUNDS = {
   maxLatitude: 55.2,
@@ -69,8 +82,11 @@ let latestPlaceName: string | undefined
 let latestBusinessCategoryPlaceKey = ''
 let latestBusinessCategory: string | undefined
 let debounceTimer: number | undefined
+let noRemovalsTrackingTimer: number | undefined
+let noRemovalsTrackingCandidate: NoRemovalsTrackingCandidate | undefined
 let lastScanStartedAt = 0
 let lastObservedUrl = location.href
+let lastNavigationPlaceKey: string | undefined
 let observer: MutationObserver | null = null
 
 const MIN_SCAN_INTERVAL_MS = 1_500
@@ -1240,59 +1256,131 @@ const sendObservationViaBackground = async (payload: ObservationPayload): Promis
   return ok
 }
 
-const maybeSendObservation = async (result: EstimateResult, locale: Locale, shareAnonymousStats: boolean) => {
+const clearNoRemovalsTrackingCandidate = () => {
+  if (noRemovalsTrackingTimer !== undefined) {
+    window.clearTimeout(noRemovalsTrackingTimer)
+    noRemovalsTrackingTimer = undefined
+  }
+  noRemovalsTrackingCandidate = undefined
+}
+
+const prepareObservation = async (
+  result: EstimateResult,
+  locale: Locale,
+  shareAnonymousStats: boolean,
+): Promise<PreparedObservation | null> => {
   if (!TRACKING_ENABLED_BY_DEFAULT || !shareAnonymousStats) {
     logTracking('Skipped observation: tracking disabled or user opted out', {
       trackingEnabled: TRACKING_ENABLED_BY_DEFAULT,
       shareAnonymousStats,
     })
-    return
+    return null
   }
 
   const placeIdentity = findPlaceIdentity()
   if (!placeIdentity) {
     logTracking('Skipped observation: no place key found')
-    return
+    return null
   }
 
-  const shouldSend = await shouldSendObservation(placeIdentity.key)
-  if (!shouldSend) {
-    logTracking('Skipped observation: local throttle active', { placeKey: placeIdentity.key })
-    return
-  }
-
+  const hasRemovedRange = result.noRemovedReviews !== true
   const installId = await ensureInstallId()
   if (!installId) {
     logTracking('Skipped observation: no install id available')
-    return
+    return null
   }
 
   const coordinates = findCoordinatesFromUrl()
-  const payload = buildObservationPayload({
-    result,
+
+  return {
+    hasRemovedRange,
+    payload: buildObservationPayload({
+      result,
+      placeKey: placeIdentity.key,
+      placeName: placeIdentity.name,
+      businessCategory: rememberBusinessCategory(placeIdentity.key),
+      sourceUrl: location.href,
+      latitude: coordinates?.latitude,
+      longitude: coordinates?.longitude,
+      locale,
+      installId,
+    }),
     placeKey: placeIdentity.key,
-    placeName: placeIdentity.name,
-    businessCategory: rememberBusinessCategory(placeIdentity.key),
-    sourceUrl: location.href,
-    latitude: coordinates?.latitude,
-    longitude: coordinates?.longitude,
-    locale,
-    installId,
-  })
+  }
+}
+
+const sendPreparedObservation = async ({ hasRemovedRange, payload, placeKey }: PreparedObservation) => {
+  const shouldSend = await shouldSendObservation(placeKey, { hasRemovedRange })
+  if (!shouldSend) {
+    logTracking('Skipped observation: local throttle active', { hasRemovedRange, placeKey })
+    return
+  }
 
   logTracking('Prepared observation payload', payload)
 
   try {
     const sent = await sendObservationViaBackground(payload)
     if (sent) {
-      await markObservationSent(placeIdentity.key)
-      logTracking('Observation sent and throttle updated', { placeKey: placeIdentity.key })
+      await markObservationSent(placeKey, { hasRemovedRange })
+      logTracking('Observation sent and throttle updated', { hasRemovedRange, placeKey })
     } else {
-      logTracking('Observation not accepted by background/API', { placeKey: placeIdentity.key })
+      logTracking('Observation not accepted by background/API', { placeKey })
     }
   } catch (error) {
     // Tracking must never affect the Google Maps UI.
     logTracking('Observation send failed in content script', error)
+  }
+}
+
+const maybeSendObservation = async (result: EstimateResult, locale: Locale, shareAnonymousStats: boolean) => {
+  const preparedObservation = await prepareObservation(result, locale, shareAnonymousStats)
+  if (preparedObservation) {
+    await sendPreparedObservation(preparedObservation)
+  }
+}
+
+const flushNoRemovalsTrackingCandidate = () => {
+  const candidate = noRemovalsTrackingCandidate
+  clearNoRemovalsTrackingCandidate()
+
+  if (candidate) {
+    void sendPreparedObservation(candidate.preparedObservation)
+  }
+}
+
+const maybeSendStableNoRemovalsObservation = async (
+  signature: string,
+  result: EstimateResult,
+  locale: Locale,
+  shareAnonymousStats: boolean,
+) => {
+  const now = Date.now()
+
+  if (noRemovalsTrackingCandidate?.signature !== signature) {
+    const preparedObservation = await prepareObservation(result, locale, shareAnonymousStats)
+    if (!preparedObservation) {
+      clearNoRemovalsTrackingCandidate()
+      return
+    }
+
+    noRemovalsTrackingCandidate = {
+      firstSeenAt: now,
+      preparedObservation,
+      signature,
+    }
+  }
+
+  const elapsed = now - noRemovalsTrackingCandidate.firstSeenAt
+  if (elapsed >= NO_REMOVALS_TRACKING_STABILIZATION_MS) {
+    flushNoRemovalsTrackingCandidate()
+    return
+  }
+
+  if (noRemovalsTrackingTimer === undefined) {
+    noRemovalsTrackingTimer = window.setTimeout(() => {
+      noRemovalsTrackingTimer = undefined
+      scheduleScan()
+    }, NO_REMOVALS_TRACKING_STABILIZATION_MS - elapsed)
   }
 }
 
@@ -1368,6 +1456,7 @@ const scanAndRender = async () => {
 
     if (signature === latestSignature && latestResult?.noRemovedReviews) {
       renderEstimateUi(latestResult, settings.warningThresholds, copy, locale, settings.inlineDisplay)
+      await maybeSendStableNoRemovalsObservation(signature, latestResult, locale, settings.shareAnonymousStats)
       return
     }
 
@@ -1378,10 +1467,14 @@ const scanAndRender = async () => {
     latestSignature = signature
     renderEstimateUi(result, settings.warningThresholds, copy, locale, settings.inlineDisplay)
     await persistLatestResult(result)
-    void maybeSendObservation(result, locale, settings.shareAnonymousStats)
+    await maybeSendStableNoRemovalsObservation(signature, result, locale, settings.shareAnonymousStats)
+    logTracking('Delayed no-removals observation until review context stabilizes', {
+      stabilizationMs: NO_REMOVALS_TRACKING_STABILIZATION_MS,
+    })
     return
   }
 
+  clearNoRemovalsTrackingCandidate()
   const data = { rating, displayedRating, reviewCount, removedRange, starBreakdown }
   const signature = JSON.stringify({
     mode: 'monte-carlo',
@@ -1420,7 +1513,14 @@ const scheduleScan = () => {
   }, delay)
 }
 
+const scheduleDeferredScans = () => {
+  scheduleScan()
+  window.setTimeout(scheduleScan, 1_000)
+  window.setTimeout(scheduleScan, 2_500)
+}
+
 const scheduleNavigationScans = () => {
+  flushNoRemovalsTrackingCandidate()
   latestSignature = ''
   latestResult = null
   latestPlaceKey = ''
@@ -1428,9 +1528,7 @@ const scheduleNavigationScans = () => {
   latestBusinessCategoryPlaceKey = ''
   latestBusinessCategory = undefined
   clearInjectedState()
-  scheduleScan()
-  window.setTimeout(scheduleScan, 1_000)
-  window.setTimeout(scheduleScan, 2_500)
+  scheduleDeferredScans()
 }
 
 const handlePotentialUrlChange = () => {
@@ -1439,6 +1537,18 @@ const handlePotentialUrlChange = () => {
   }
 
   lastObservedUrl = location.href
+
+  // Google Maps mutates the URL repeatedly within the same profile (e.g. cid URL ->
+  // /maps/place/ URL, appended data params). Those refinements share the same place
+  // identity and must not reset the no-removals stabilization, otherwise a pending
+  // snapshot is flushed before the removed-reviews banner has loaded.
+  const currentPlaceKey = findPlaceKeyFromUrl()
+  if (currentPlaceKey && currentPlaceKey === lastNavigationPlaceKey) {
+    scheduleDeferredScans()
+    return
+  }
+
+  lastNavigationPlaceKey = currentPlaceKey
   scheduleNavigationScans()
 }
 
@@ -1469,4 +1579,5 @@ if (browser?.storage?.onChanged) {
   })
 }
 
+lastNavigationPlaceKey = findPlaceKeyFromUrl()
 scheduleScan()
