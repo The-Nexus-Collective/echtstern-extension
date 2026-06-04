@@ -2,7 +2,13 @@ export const GOOGLE_MAPS_SELECTORS = {
   /** Reviews-Spalte: Sterne (.PPCwl), Platzhalter (.AyRUI), … */
   reviewsPanelRoot: '.m6QErb.DxyBCb.kA9KIf.dS8AEf.XiKgde',
   starRatingSection: '.PPCwl',
-  activeTabCandidates: ['button[role="tab"][aria-selected="true"]'],
+  activeTabCandidates: [
+    'button[role="tab"][aria-selected="true"]',
+    '[role="tab"][aria-selected="true"]',
+    'button[aria-current="page"]',
+    'a[aria-current="page"]',
+    '[role="tab"][tabindex="0"]',
+  ],
   ratingContainerCandidates: ['.jANrlb', '[role="main"] .fontDisplayLarge'],
   ratingTextCandidates: ['.jANrlb .fontDisplayLarge', '[aria-label*="Sterne"]', '[aria-label*="stars"]'],
   reviewCountCandidates: ['.jANrlb .fontBodySmall', '[aria-label*="Rezensionen"]', '[aria-label*="reviews"]'],

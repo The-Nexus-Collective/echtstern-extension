@@ -70,6 +70,7 @@ let latestBusinessCategoryPlaceKey = ''
 let latestBusinessCategory: string | undefined
 let debounceTimer: number | undefined
 let lastScanStartedAt = 0
+let lastObservedUrl = location.href
 let observer: MutationObserver | null = null
 
 const MIN_SCAN_INTERVAL_MS = 1_500
@@ -443,20 +444,36 @@ const findStarRatingSectionPpcwl = (): HTMLElement | null => {
   )
 }
 
+const isGoogleMapsPlacePage = (): boolean => {
+  try {
+    return new URL(location.href).pathname.includes('/maps/place/')
+  } catch {
+    return false
+  }
+}
+
+const hasReviewsViewUrlMarker = (): boolean =>
+  /(?:!9m1!1b1|\/reviews(?:[/?#]|$))/i.test(location.href)
+
+const hasReviewsPanelEvidence = (): boolean =>
+  Boolean(findStarRatingSectionPpcwl()) || parseReviewCount(findReviewCountText()) !== null
+
 const isReviewsTabActive = (): boolean => {
+  const reviewsLabelPattern = /\b(rezensionen|bewertungen|berichte|reviews?|ratings?)\b/i
+
   for (const selector of GOOGLE_MAPS_SELECTORS.activeTabCandidates) {
     const tabs = Array.from(document.querySelectorAll<HTMLElement>(selector))
     if (
       tabs.some((tab) => {
-        const label = `${tab.getAttribute('aria-label') ?? ''} ${tab.textContent ?? ''}`.toLowerCase()
-        return /\b(rezensionen|reviews?)\b/.test(label)
+        const label = `${tab.getAttribute('aria-label') ?? ''} ${tab.textContent ?? ''}`
+        return reviewsLabelPattern.test(label)
       })
     ) {
       return true
     }
   }
 
-  return false
+  return isGoogleMapsPlacePage() && (hasReviewsViewUrlMarker() || hasReviewsPanelEvidence())
 }
 
 const cloneAyRuiSpacer = (template: HTMLElement | null, id: string): HTMLElement => {
@@ -1346,7 +1363,27 @@ const scheduleScan = () => {
   }, delay)
 }
 
+const scheduleNavigationScans = () => {
+  latestSignature = ''
+  latestResult = null
+  clearInjectedState()
+  scheduleScan()
+  window.setTimeout(scheduleScan, 1_000)
+  window.setTimeout(scheduleScan, 2_500)
+}
+
+const handlePotentialUrlChange = () => {
+  if (location.href === lastObservedUrl) {
+    return
+  }
+
+  lastObservedUrl = location.href
+  scheduleNavigationScans()
+}
+
 observer = new MutationObserver((mutations) => {
+  handlePotentialUrlChange()
+
   const onlyOwnMutations = mutations.every((mutation) => {
     const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)]
     return isOwnNode(mutation.target) || changedNodes.every(isOwnNode)
@@ -1357,6 +1394,10 @@ observer = new MutationObserver((mutations) => {
   }
 })
 observer.observe(document.documentElement, { childList: true, subtree: true })
+
+window.addEventListener('popstate', handlePotentialUrlChange)
+window.addEventListener('hashchange', handlePotentialUrlChange)
+window.setInterval(handlePotentialUrlChange, 750)
 
 if (browser?.storage?.onChanged) {
   browser.storage.onChanged.addListener((changes, areaName) => {

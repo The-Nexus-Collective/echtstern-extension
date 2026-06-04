@@ -3,7 +3,7 @@
   "name": "__MSG_extensionName__",
   "description": "__MSG_extensionDescription__",
   "default_locale": "de",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "browser_specific_settings": {
     "gecko": {
       "id": "echtstern@echtstern.de",
@@ -37,23 +37,23 @@
   },
   "permissions": ["storage"],
   "host_permissions": [
-    "https://google.com/maps/*",
-    "https://www.google.com/maps/*",
-    "https://*.google.com/maps/*",
-    "https://google.de/maps/*",
-    "https://www.google.de/maps/*",
-    "https://*.google.de/maps/*",
+    "https://google.com/maps*",
+    "https://www.google.com/maps*",
+    "https://*.google.com/maps*",
+    "https://google.de/maps*",
+    "https://www.google.de/maps*",
+    "https://*.google.de/maps*",
     "https://echtstern.de/*"
   ],
   "content_scripts": [
     {
       "matches": [
-        "https://google.com/maps/*",
-        "https://www.google.com/maps/*",
-        "https://*.google.com/maps/*",
-        "https://google.de/maps/*",
-        "https://www.google.de/maps/*",
-        "https://*.google.de/maps/*"
+        "https://google.com/maps*",
+        "https://www.google.com/maps*",
+        "https://*.google.com/maps*",
+        "https://google.de/maps*",
+        "https://www.google.de/maps*",
+        "https://*.google.de/maps*"
       ],
       "js": ["assets/content.js"],
       "run_at": "document_idle"
