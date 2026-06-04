@@ -36,6 +36,8 @@ import {
   REMOVED_NOTICE_TEXT_PATTERN,
   REVIEW_COUNT_TEXT_PATTERN,
 } from './selectors'
+import { placeKeyFromUrl } from '../shared/placeIdentity'
+import { isReviewsContext } from '../shared/reviewsContext'
 
 const LEGACY_BANNER_ID = 'echtstern-estimate-banner'
 const TRIGGER_ID = 'echtstern-popup-trigger'
@@ -460,37 +462,18 @@ const findStarRatingSectionPpcwl = (): HTMLElement | null => {
   )
 }
 
-const isGoogleMapsPlacePage = (): boolean => {
-  try {
-    return new URL(location.href).pathname.includes('/maps/place/')
-  } catch {
-    return false
-  }
-}
-
-const hasReviewsViewUrlMarker = (): boolean =>
-  /(?:!9m1!1b1|\/reviews(?:[/?#]|$))/i.test(location.href)
-
-const hasReviewsPanelEvidence = (): boolean =>
-  Boolean(findStarRatingSectionPpcwl()) || parseReviewCount(findReviewCountText()) !== null
-
-const isReviewsTabActive = (): boolean => {
-  const reviewsLabelPattern = /\b(rezensionen|bewertungen|berichte|reviews?|ratings?)\b/i
-
+const collectActiveTabLabels = (): string[] => {
+  const labels: string[] = []
   for (const selector of GOOGLE_MAPS_SELECTORS.activeTabCandidates) {
-    const tabs = Array.from(document.querySelectorAll<HTMLElement>(selector))
-    if (
-      tabs.some((tab) => {
-        const label = `${tab.getAttribute('aria-label') ?? ''} ${tab.textContent ?? ''}`
-        return reviewsLabelPattern.test(label)
-      })
-    ) {
-      return true
+    for (const tab of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
+      labels.push(`${tab.getAttribute('aria-label') ?? ''} ${tab.textContent ?? ''}`)
     }
   }
-
-  return isGoogleMapsPlacePage() && (hasReviewsViewUrlMarker() || hasReviewsPanelEvidence())
+  return labels
 }
+
+const isReviewsTabActive = (): boolean =>
+  isReviewsContext({ activeTabLabels: collectActiveTabLabels(), href: location.href })
 
 const cloneAyRuiSpacer = (template: HTMLElement | null, id: string): HTMLElement => {
   if (template) {
@@ -571,54 +554,7 @@ const findPlaceNameFromUrl = (): string | undefined => {
   }
 }
 
-const findGoogleMapsCidFromUrl = (): string | undefined => {
-  try {
-    const url = new URL(location.href)
-    const existingCid = url.searchParams.get('cid')
-
-    if (existingCid && /^\d+$/.test(existingCid)) {
-      return existingCid
-    }
-  } catch {
-    // Fall through to extracting the raw hex CID from Google Maps' data segment.
-  }
-
-  const decodedUrl = (() => {
-    try {
-      return decodeURIComponent(location.href)
-    } catch {
-      return location.href
-    }
-  })()
-  const matches = [...decodedUrl.matchAll(/0x[0-9a-f]+:0x([0-9a-f]+)/gi)]
-  const cidHex = matches.at(-1)?.[1]
-
-  if (!cidHex) {
-    return undefined
-  }
-
-  try {
-    return BigInt(`0x${cidHex}`).toString(10)
-  } catch {
-    return undefined
-  }
-}
-
-const findPlaceKeyFromUrl = (): string | undefined => {
-  const cid = findGoogleMapsCidFromUrl()
-
-  if (cid) {
-    return `google-cid:${cid}`
-  }
-
-  try {
-    const path = new URL(location.href).pathname
-    const match = path.match(/\/maps\/place\/([^/?#]+)/)
-    return match?.[1] ? decodeURIComponent(match[1].replace(/\+/g, ' ')).trim() : undefined
-  } catch {
-    return undefined
-  }
-}
+const findPlaceKeyFromUrl = (): string | undefined => placeKeyFromUrl(location.href)
 
 type PlaceIdentity = {
   key: string

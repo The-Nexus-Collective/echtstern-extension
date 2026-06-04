@@ -1,6 +1,6 @@
 {
   "name": "echtstern-extension",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Open-source Chrome extension for contextualizing Google Maps ratings.",
   "license": "MIT",
   "type": "module",
