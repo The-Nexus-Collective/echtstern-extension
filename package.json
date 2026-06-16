@@ -28,6 +28,7 @@
     "test": "vitest run",
     "lint": "eslint .",
     "lint:firefox": "web-ext lint --source-dir dist",
+    "package:chrome": "node scripts/package-chrome.mjs",
     "run:firefox": "web-ext run --source-dir dist",
     "package:firefox": "web-ext build --source-dir dist --artifacts-dir artifacts --overwrite-dest",
     "preview": "vite preview"
