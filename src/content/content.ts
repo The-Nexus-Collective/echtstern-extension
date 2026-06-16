@@ -51,7 +51,7 @@ const STYLE_ID = 'echtstern-content-style'
 
 const STAR_VALUES_DESC: StarValue[] = [5, 4, 3, 2, 1]
 const OUTSIDE_GERMANY_SIGNATURE = 'outside-germany'
-const NO_REMOVALS_TRACKING_STABILIZATION_MS = 3_000
+const NO_REMOVALS_TRACKING_STABILIZATION_MS = 2_000
 
 type PreparedObservation = {
   hasRemovedRange: boolean
@@ -529,6 +529,101 @@ const findVisibleBusinessCategory = (): string | undefined => {
   return undefined
 }
 
+const titleCaseGoogleCategorySlug = (slug: string): string | undefined => {
+  const words = slug
+    .split('_')
+    .map((word) => word.trim())
+    .filter(Boolean)
+
+  if (words.length === 0) {
+    return undefined
+  }
+
+  return words.map((word) => `${word[0]?.toUpperCase() ?? ''}${word.slice(1)}`).join(' ')
+}
+
+const decodeGoogleMapsUrlSafeBase64Bytes = (value: string): Uint8Array | undefined => {
+  try {
+    const base64 = value.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = `${base64}${'='.repeat((4 - (base64.length % 4)) % 4)}`
+    return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0))
+  } catch {
+    return undefined
+  }
+}
+
+const decodeGoogleMapsCategorySlug = (bytes: Uint8Array): string | undefined => {
+  const categoryFieldMarker = [0x73, 0x92, 0x01]
+
+  for (let index = 0; index < bytes.length - categoryFieldMarker.length; index += 1) {
+    const isCategoryField = categoryFieldMarker.every((byte, offset) => bytes[index + offset] === byte)
+    if (!isCategoryField) {
+      continue
+    }
+
+    const categoryLength = bytes[index + categoryFieldMarker.length]
+    const categoryStart = index + categoryFieldMarker.length + 1
+    const categoryEnd = categoryStart + categoryLength
+    if (categoryLength === 0 || categoryLength > 80 || categoryEnd > bytes.length) {
+      continue
+    }
+
+    const categoryBytes = bytes.slice(categoryStart, categoryEnd)
+    const isGoogleCategorySlug = categoryBytes.every(
+      (byte) => (byte >= 97 && byte <= 122) || byte === 95,
+    )
+    if (!isGoogleCategorySlug) {
+      continue
+    }
+
+    const slug = new TextDecoder().decode(categoryBytes)
+    if (slug !== 'restaurants') {
+      return slug
+    }
+  }
+
+  return undefined
+}
+
+const decodeGoogleMapsUrlToken = (value: string): string | undefined => {
+  try {
+    return decodeURIComponent(value.replace(/\+/g, ' ')).trim()
+  } catch {
+    return undefined
+  }
+}
+
+const findBusinessCategoryFromSearchCategoryUrl = (): string | undefined => {
+  const searchCategoryCandidates = Array.from(location.href.matchAll(/!1s([^!?#&]+)!6e5/g))
+    .map((match) => (match[1] ? decodeGoogleMapsUrlToken(match[1]) : undefined))
+    .filter((category): category is string => Boolean(category))
+
+  for (const category of searchCategoryCandidates.reverse()) {
+    if (/^restaurants?$/i.test(category)) {
+      return 'Restaurant'
+    }
+  }
+
+  return undefined
+}
+
+const findBusinessCategoryFromUrl = (): string | undefined => {
+  const encodedCategoryCandidates = Array.from(location.href.matchAll(/!15s([^!?#&]+)/g))
+    .map((match) => match[1])
+    .filter(Boolean)
+
+  for (const encoded of encodedCategoryCandidates.reverse()) {
+    const bytes = decodeGoogleMapsUrlSafeBase64Bytes(encoded)
+    const slug = bytes ? decodeGoogleMapsCategorySlug(bytes) : undefined
+
+    if (slug) {
+      return titleCaseGoogleCategorySlug(slug)
+    }
+  }
+
+  return findBusinessCategoryFromSearchCategoryUrl()
+}
+
 const findVisiblePlaceName = (): string | undefined => {
   for (const selector of GOOGLE_MAPS_SELECTORS.placeNameCandidates) {
     const text = normalizePlaceName(document.querySelector<HTMLElement>(selector)?.textContent)
@@ -646,12 +741,16 @@ const rememberBusinessCategory = (placeKey = findPlaceKey()): string | undefined
   }
 
   const visibleBusinessCategory = findVisibleBusinessCategory()
-  if (visibleBusinessCategory) {
+  const urlBusinessCategory = findBusinessCategoryFromUrl()
+  const currentBusinessCategory = visibleBusinessCategory ?? urlBusinessCategory
+  if (currentBusinessCategory) {
     latestBusinessCategoryPlaceKey = placeKey
-    latestBusinessCategory = visibleBusinessCategory
+    latestBusinessCategory = currentBusinessCategory
   }
 
-  return latestBusinessCategoryPlaceKey === placeKey ? latestBusinessCategory : undefined
+  const rememberedBusinessCategory = latestBusinessCategoryPlaceKey === placeKey ? latestBusinessCategory : undefined
+
+  return rememberedBusinessCategory
 }
 
 const removeLegacyBanner = () => {
@@ -1227,6 +1326,7 @@ const prepareObservation = async (
   }
 
   const coordinates = findCoordinatesFromUrl()
+  const businessCategory = rememberBusinessCategory(placeIdentity.key)
 
   return {
     hasRemovedRange,
@@ -1234,7 +1334,7 @@ const prepareObservation = async (
       result,
       placeKey: placeIdentity.key,
       placeName: placeIdentity.name,
-      businessCategory: rememberBusinessCategory(placeIdentity.key),
+      businessCategory,
       sourceUrl: location.href,
       latitude: coordinates?.latitude,
       longitude: coordinates?.longitude,
@@ -1275,11 +1375,12 @@ const maybeSendObservation = async (result: EstimateResult, locale: Locale, shar
   }
 }
 
-const flushNoRemovalsTrackingCandidate = () => {
+const flushNoRemovalsTrackingCandidate = (reason: string) => {
   const candidate = noRemovalsTrackingCandidate
   clearNoRemovalsTrackingCandidate()
 
   if (candidate) {
+    void reason
     void sendPreparedObservation(candidate.preparedObservation)
   }
 }
@@ -1308,7 +1409,7 @@ const maybeSendStableNoRemovalsObservation = async (
 
   const elapsed = now - noRemovalsTrackingCandidate.firstSeenAt
   if (elapsed >= NO_REMOVALS_TRACKING_STABILIZATION_MS) {
-    flushNoRemovalsTrackingCandidate()
+    flushNoRemovalsTrackingCandidate('stable_elapsed')
     return
   }
 
@@ -1456,7 +1557,7 @@ const scheduleDeferredScans = () => {
 }
 
 const scheduleNavigationScans = () => {
-  flushNoRemovalsTrackingCandidate()
+  flushNoRemovalsTrackingCandidate('navigation')
   latestSignature = ''
   latestResult = null
   latestPlaceKey = ''

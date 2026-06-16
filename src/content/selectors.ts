@@ -16,6 +16,7 @@ export const GOOGLE_MAPS_SELECTORS = {
   businessCategoryCandidates: [
     'button.DkEaL[jsaction$=".category"]',
     'button[jsaction*=".category"]',
+    '[role="main"] span.mgr77e > span > span:not(.fjHK4):not(.wmQCje)',
   ],
   starBreakdownCandidates: [
     'tr.BHOKXe[aria-label]',
