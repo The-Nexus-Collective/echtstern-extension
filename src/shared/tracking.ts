@@ -1,8 +1,23 @@
 import { browser, hasBrowserLocalStorage } from './browserApi'
+import type { PopupCandidate, PopupMatch, PopupMatchResponse } from './popup'
 import type { EstimateResult, RemovedReviewRange, StarBreakdown } from './types'
 
 export const TRACKING_ENABLED_BY_DEFAULT = true
-export const TRACKING_ENDPOINT = 'https://echtstern.de/api/observations'
+
+const DEFAULT_API_BASE_URL = 'https://echtstern.de'
+
+/**
+ * Base URL for the ECHTSTERN API. Override for local end-to-end testing by
+ * building the extension with `VITE_ECHTSTERN_API_BASE_URL`, e.g.
+ * `VITE_ECHTSTERN_API_BASE_URL=http://localhost:3000 pnpm build`. The dev build
+ * also injects the matching host permission (see `vite.config.ts`).
+ */
+export const API_BASE_URL =
+  (import.meta.env.VITE_ECHTSTERN_API_BASE_URL as string | undefined)?.replace(/\/+$/, '') ||
+  DEFAULT_API_BASE_URL
+
+export const TRACKING_ENDPOINT = `${API_BASE_URL}/api/observations`
+export const MATCH_ENDPOINT = `${API_BASE_URL}/api/place-matches`
 export const OBSERVATION_THROTTLE_MS = 6 * 60 * 60 * 1000
 
 export const INSTALL_ID_STORAGE_KEY = 'echtstern:installId'
@@ -177,6 +192,40 @@ export const buildObservationPayload = ({
   installId,
   schemaVersion: 1,
 })
+
+export const fetchPlaceMatches = async (candidates: PopupCandidate[]): Promise<PopupMatch[] | null> => {
+  if (candidates.length === 0) {
+    return []
+  }
+
+  try {
+    const response = await fetch(MATCH_ENDPOINT, {
+      body: JSON.stringify({
+        candidates: candidates.map((candidate) => ({
+          name: candidate.name,
+          reviewCount: candidate.reviewCount,
+          businessCategory: candidate.businessCategory,
+          cid: candidate.cid,
+        })),
+      }),
+      headers: {
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+    })
+
+    if (!response.ok) {
+      logTracking('Place match request failed', { status: response.status })
+      return null
+    }
+
+    const data = (await response.json()) as PopupMatchResponse
+    return Array.isArray(data.matches) ? data.matches : null
+  } catch (error) {
+    logTracking('Place match request error', error)
+    return null
+  }
+}
 
 export const postObservation = async (payload: ObservationPayload): Promise<boolean> => {
   logTracking('Posting observation', {

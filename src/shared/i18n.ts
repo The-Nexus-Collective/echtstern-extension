@@ -60,6 +60,17 @@ export const messages = {
       inlineOpenDetails: 'Details öffnen',
       inlineCardAriaLabel: (rating: string) =>
         `ECHTSTERN-Schätzung ${rating} Sterne. Zum Öffnen der Details klicken.`,
+      popup: {
+        brand: 'ECHTSTERN',
+        cta: 'Bewertung mit ECHTSTERN prüfen',
+        openReviewsLabel: 'Rezensionen-Tab öffnen und die ECHTSTERN-Bewertung prüfen.',
+        valueAriaLabel: (rating: string) =>
+          `ECHTSTERN-Schätzung ${rating} Sterne. Klicken, um die Rezensionen zu öffnen.`,
+        removedInfo: (range: string) =>
+          `ECHTSTERN: In den letzten 365 Tagen wurden ${range} Bewertungen aufgrund von Beschwerden wegen Diffamierung entfernt. Zum Prüfen klicken.`,
+        noRemovedInfo:
+          'ECHTSTERN: Dieses Geschäft hat in den letzten 365 Tagen keine Bewertungen entfernen lassen. Zum Prüfen klicken.',
+      },
     },
     estimate: {
       missingTitle: 'Kontext fehlt!',
@@ -192,6 +203,17 @@ export const messages = {
       inlineOpenDetails: 'Open details',
       inlineCardAriaLabel: (rating: string) =>
         `ECHTSTERN estimate ${rating} stars. Click to open details.`,
+      popup: {
+        brand: 'ECHTSTERN',
+        cta: 'Check rating with ECHTSTERN',
+        openReviewsLabel: 'Open the reviews tab and check the ECHTSTERN rating.',
+        valueAriaLabel: (rating: string) =>
+          `ECHTSTERN estimate ${rating} stars. Click to open the reviews.`,
+        removedInfo: (range: string) =>
+          `ECHTSTERN: ${range} reviews were removed in the last 365 days due to defamation complaints. Click to check.`,
+        noRemovedInfo:
+          'ECHTSTERN: This business has not had any reviews removed in the last 365 days. Click to check.',
+      },
     },
     estimate: {
       missingTitle: 'Missing context',

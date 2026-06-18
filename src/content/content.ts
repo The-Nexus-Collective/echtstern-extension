@@ -36,8 +36,20 @@ import {
   REMOVED_NOTICE_TEXT_PATTERN,
   REVIEW_COUNT_TEXT_PATTERN,
 } from './selectors'
-import { placeKeyFromUrl } from '../shared/placeIdentity'
+import { extractGoogleMapsCid, placeKeyFromUrl } from '../shared/placeIdentity'
 import { isReviewsContext } from '../shared/reviewsContext'
+import {
+  decidePopupRender,
+  extractPopupCandidates,
+  extractResultsCandidates,
+  popupCandidateCacheKey,
+  resolvePopupOpenTarget,
+  type PopupCandidate,
+  type PopupExtraction,
+  type PopupMatch,
+  type PopupMatchPlace,
+  type ResultExtraction,
+} from '../shared/popup'
 
 const LEGACY_BANNER_ID = 'echtstern-estimate-banner'
 const TRIGGER_ID = 'echtstern-popup-trigger'
@@ -48,10 +60,23 @@ const OUTSIDE_GERMANY_CARD_ID = 'echtstern-outside-germany-card'
 const OUTSIDE_GERMANY_CARD_SPACER_BEFORE_ID = 'echtstern-outside-germany-card-spacer-before'
 const STATUS_BADGE_ID = 'echtstern-rating-status'
 const STYLE_ID = 'echtstern-content-style'
+const POPUP_BADGE_CLASS = 'echtstern-popup-badge'
+const SIDEBAR_BADGE_ID = 'echtstern-sidebar-badge'
 
 const STAR_VALUES_DESC: StarValue[] = [5, 4, 3, 2, 1]
 const OUTSIDE_GERMANY_SIGNATURE = 'outside-germany'
 const NO_REMOVALS_TRACKING_STABILIZATION_MS = 2_000
+const POPUP_SCAN_DEBOUNCE_MS = 400
+const POPUP_SIMULATION_COUNT = 2_000
+const POPUP_MATCH_BATCH_SIZE = 10
+const POPUP_OPEN_REVIEWS_POLL_MS = 200
+const POPUP_OPEN_REVIEWS_MAX_ATTEMPTS = 40
+const POPUP_OPEN_REVIEWS_STABLE_TICKS = 3
+const REVIEWS_TAB_LABEL_PATTERN = /(rezensionen|reviews)/i
+const POPUP_SEARCH_ICON_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/></svg>'
+const POPUP_INFO_ICON_SVG =
+  '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>'
 
 type PreparedObservation = {
   hasRemovedRange: boolean
@@ -90,6 +115,11 @@ let lastScanStartedAt = 0
 let lastObservedUrl = location.href
 let lastNavigationPlaceKey: string | undefined
 let observer: MutationObserver | null = null
+let popupDebounceTimer: number | undefined
+const popupMatchCache = new Map<string, PopupMatch | null>()
+const popupPendingKeys = new Set<string>()
+const cidMatchCache = new Map<string, PopupMatch | null>()
+const cidPendingKeys = new Set<string>()
 
 const MIN_SCAN_INTERVAL_MS = 1_500
 
@@ -106,7 +136,7 @@ const isOwnNode = (node: Node): boolean => {
   const element = node instanceof Element ? node : node.parentElement
   return Boolean(
     element?.closest(
-      `#${LEGACY_BANNER_ID}, #${TRIGGER_ID}, #${TRIGGER_SPACER_BEFORE_ID}, #${INLINE_CARD_ID}, #${INLINE_CARD_SPACER_BEFORE_ID}, #${OUTSIDE_GERMANY_CARD_ID}, #${OUTSIDE_GERMANY_CARD_SPACER_BEFORE_ID}, #${STATUS_BADGE_ID}, #${STYLE_ID}`,
+      `#${LEGACY_BANNER_ID}, #${TRIGGER_ID}, #${TRIGGER_SPACER_BEFORE_ID}, #${INLINE_CARD_ID}, #${INLINE_CARD_SPACER_BEFORE_ID}, #${OUTSIDE_GERMANY_CARD_ID}, #${OUTSIDE_GERMANY_CARD_SPACER_BEFORE_ID}, #${STATUS_BADGE_ID}, #${STYLE_ID}, .${POPUP_BADGE_CLASS}`,
     ),
   )
 }
@@ -369,6 +399,86 @@ const injectStyles = () => {
       font-size: 11px;
       margin-top: 8px;
       text-align: right;
+    }
+
+    .${POPUP_BADGE_CLASS} {
+      align-items: center;
+      background: #f7fbff;
+      border: 1px solid #202124;
+      border-radius: 999px;
+      color: #202124;
+      cursor: pointer;
+      display: inline-flex;
+      font-family: Roboto, Arial, sans-serif;
+      gap: 6px;
+      line-height: 1;
+      margin-top: 6px;
+      max-width: 100%;
+      padding: 4px 10px;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    .${POPUP_BADGE_CLASS}:hover {
+      background: #eef3f8;
+    }
+
+    .${POPUP_BADGE_CLASS} .ec-popup-score {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .${POPUP_BADGE_CLASS} .ec-popup-stars {
+      display: inline-block;
+      font-size: 13px;
+      height: 13px;
+      letter-spacing: 1px;
+      line-height: 1;
+      position: relative;
+    }
+
+    .${POPUP_BADGE_CLASS} .ec-popup-stars-track {
+      color: #dadce0;
+      display: inline-block;
+      white-space: nowrap;
+    }
+
+    .${POPUP_BADGE_CLASS} .ec-popup-stars-fill {
+      color: #fbbc04;
+      display: inline-block;
+      left: 0;
+      overflow: hidden;
+      position: absolute;
+      top: 0;
+      white-space: nowrap;
+    }
+
+    .${POPUP_BADGE_CLASS} .ec-popup-brand {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .${POPUP_BADGE_CLASS} .ec-popup-cta-text {
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .${POPUP_BADGE_CLASS} .ec-popup-info,
+    .${POPUP_BADGE_CLASS} .ec-popup-action {
+      align-items: center;
+      display: inline-flex;
+      flex: 0 0 auto;
+    }
+
+    .${POPUP_BADGE_CLASS} .ec-popup-info { color: #5f6368; }
+    .${POPUP_BADGE_CLASS} .ec-popup-action { color: #1a73e8; }
+
+    .${POPUP_BADGE_CLASS} .ec-popup-info svg,
+    .${POPUP_BADGE_CLASS} .ec-popup-action svg {
+      display: block;
+      height: 16px;
+      width: 16px;
     }
   `
   document.documentElement.append(style)
@@ -1421,6 +1531,615 @@ const maybeSendStableNoRemovalsObservation = async (
   }
 }
 
+const fetchPopupMatchesViaBackground = async (
+  candidates: PopupCandidate[],
+): Promise<PopupMatch[] | null> => {
+  if (!browser?.runtime?.sendMessage) {
+    return null
+  }
+
+  try {
+    const response = await browser.runtime.sendMessage({
+      type: 'FETCH_ECHTSTERN_MATCHES',
+      candidates,
+    })
+    const typed = response as { ok?: boolean; matches?: PopupMatch[] } | undefined
+    if (!typed?.ok || !Array.isArray(typed.matches)) {
+      return null
+    }
+    return typed.matches
+  } catch (error) {
+    logUnexpectedExtensionError('Popup match request failed', error)
+    return null
+  }
+}
+
+const estimatePopupRating = (
+  place: PopupMatchPlace,
+  settings: Awaited<ReturnType<typeof loadSettings>>,
+  noRemovedReviewsLabel: string,
+): number => {
+  const starBreakdown = place.starBreakdown ?? undefined
+
+  if (!place.removedRange) {
+    return buildNoRemovedReviewsEstimate(
+      {
+        rating: place.rating,
+        displayedRating: place.displayedRating,
+        reviewCount: place.reviewCount,
+        starBreakdown,
+      },
+      settings.weights,
+      {
+        defamationQuotaPercent: settings.defamationQuotaPercent,
+        noRemovedReviewsLabel,
+      },
+    ).median
+  }
+
+  return calculateEstimate(
+    {
+      rating: place.rating,
+      displayedRating: place.displayedRating,
+      reviewCount: place.reviewCount,
+      removedRange: {
+        min: place.removedRange.min,
+        max: place.removedRange.max,
+        label: '',
+        isOpenEnded: place.removedRange.isOpenEnded,
+      },
+      starBreakdown,
+    },
+    settings.weights,
+    {
+      defamationQuotaPercent: settings.defamationQuotaPercent,
+      simulationCount: POPUP_SIMULATION_COUNT,
+    },
+  ).median
+}
+
+const openEchtsternPopup = () => {
+  void browser?.runtime
+    .sendMessage({ type: 'OPEN_ECHTSTERN_POPUP' })
+    .catch((error: unknown) => logUnexpectedExtensionError('Open popup message failed', error))
+}
+
+const dispatchSyntheticClick = (element: HTMLElement) => {
+  const eventInit: MouseEventInit = { bubbles: true, cancelable: true, view: window }
+
+  // Google Maps wires its handlers via jsaction, which often needs the full
+  // pointer/mouse sequence (not just a bare click) to reliably fire.
+  if (typeof PointerEvent !== 'undefined') {
+    element.dispatchEvent(new PointerEvent('pointerdown', eventInit))
+  }
+  element.dispatchEvent(new MouseEvent('mousedown', eventInit))
+  if (typeof PointerEvent !== 'undefined') {
+    element.dispatchEvent(new PointerEvent('pointerup', eventInit))
+  }
+  element.dispatchEvent(new MouseEvent('mouseup', eventInit))
+  element.dispatchEvent(new MouseEvent('click', eventInit))
+}
+
+const findReviewsTab = (): HTMLElement | null => {
+  const tabs = Array.from(document.querySelectorAll<HTMLElement>('button[role="tab"], [role="tab"]'))
+  return (
+    tabs.find((tab) =>
+      REVIEWS_TAB_LABEL_PATTERN.test(`${tab.getAttribute('aria-label') ?? ''} ${tab.textContent ?? ''}`),
+    ) ?? null
+  )
+}
+
+/**
+ * Switch the currently open place panel to its reviews tab. Google re-renders the
+ * panel asynchronously and can reset it back to the overview tab after our first
+ * click, so keep re-clicking until the reviews tab stays selected for a couple of
+ * ticks (or we run out of attempts).
+ */
+const switchToReviewsTab = () => {
+  let attempts = 0
+  let stableSelectedTicks = 0
+  const timer = window.setInterval(() => {
+    attempts += 1
+
+    const reviewsTab = findReviewsTab()
+    if (reviewsTab) {
+      if (reviewsTab.getAttribute('aria-selected') === 'true') {
+        stableSelectedTicks += 1
+        if (stableSelectedTicks >= POPUP_OPEN_REVIEWS_STABLE_TICKS) {
+          window.clearInterval(timer)
+          return
+        }
+      } else {
+        stableSelectedTicks = 0
+        try {
+          dispatchSyntheticClick(reviewsTab)
+        } catch (error) {
+          logUnexpectedExtensionError('Switching to reviews tab failed', error)
+        }
+      }
+    }
+
+    if (attempts >= POPUP_OPEN_REVIEWS_MAX_ATTEMPTS) {
+      window.clearInterval(timer)
+    }
+  }, POPUP_OPEN_REVIEWS_POLL_MS)
+}
+
+/**
+ * Open a place by replaying a native click on its panel/card handle, then switch
+ * to the reviews tab so the user lands where ECHTSTERN data is shown.
+ */
+const openPlaceAndShowReviews = (openTarget: HTMLElement) => {
+  try {
+    dispatchSyntheticClick(openTarget)
+  } catch (error) {
+    logUnexpectedExtensionError('Opening place failed', error)
+    openEchtsternPopup()
+    return
+  }
+
+  switchToReviewsTab()
+}
+
+/**
+ * Open the hovered place by replaying the popup's own click. The popup exposes no
+ * place URL, so this DOM click-through is the only contextual handle we have.
+ */
+const openHoveredPlaceReviews = (extraction: PopupExtraction) => {
+  openPlaceAndShowReviews(resolvePopupOpenTarget(extraction))
+}
+
+const buildPopupStars = (rating: number): HTMLElement => {
+  const wrapper = document.createElement('span')
+  wrapper.className = 'ec-popup-stars'
+  wrapper.setAttribute('aria-hidden', 'true')
+
+  const track = document.createElement('span')
+  track.className = 'ec-popup-stars-track'
+  track.textContent = '★★★★★'
+  wrapper.append(track)
+
+  const fill = document.createElement('span')
+  fill.className = 'ec-popup-stars-fill'
+  fill.textContent = '★★★★★'
+  fill.style.width = `${Math.max(0, Math.min(100, (rating / 5) * 100))}%`
+  wrapper.append(fill)
+
+  return wrapper
+}
+
+const buildPopupIcon = (svg: string, className: string): HTMLElement => {
+  const icon = document.createElement('span')
+  icon.className = className
+  icon.innerHTML = svg
+  return icon
+}
+
+const formatPopupRemovedRange = (
+  removedRange: NonNullable<PopupMatchPlace['removedRange']>,
+  locale: Locale,
+): string => {
+  if (removedRange.isOpenEnded) {
+    const threshold = formatWholeCount(Math.max(0, removedRange.min - 1), locale)
+    return locale === 'de' ? `mehr als ${threshold}` : `more than ${threshold}`
+  }
+
+  if (removedRange.min === removedRange.max) {
+    return formatWholeCount(removedRange.min, locale)
+  }
+
+  return `${formatWholeCount(removedRange.min, locale)}–${formatWholeCount(removedRange.max, locale)}`
+}
+
+const popupRemovedInfoText = (place: PopupMatchPlace, copy: Messages, locale: Locale): string =>
+  place.removedRange
+    ? copy.content.popup.removedInfo(formatPopupRemovedRange(place.removedRange, locale))
+    : copy.content.popup.noRemovedInfo
+
+/**
+ * Build the shared ECHTSTERN badge element (popup + sidebar). Returns the
+ * detached button plus a content signature so callers can skip re-inserting an
+ * identical badge.
+ */
+const buildEchtsternBadgeElement = (
+  match: PopupMatch | null,
+  settings: Awaited<ReturnType<typeof loadSettings>>,
+  copy: Messages,
+  locale: Locale,
+  onActivate: () => void,
+): { badge: HTMLButtonElement; signature: string } => {
+  const plan = decidePopupRender(match)
+  const popupCopy = copy.content.popup
+  const place = plan === 'cta' ? null : match?.place ?? null
+  const ratingValue = place ? estimatePopupRating(place, settings, copy.estimate.noRemovedReviews) : null
+  const ratingText = ratingValue !== null ? formatRating(ratingValue, locale) : ''
+  const infoText = place && ratingValue !== null ? popupRemovedInfoText(place, copy, locale) : ''
+  const signature = `${plan}|${ratingText}|${infoText}`
+
+  const badge = document.createElement('button')
+  badge.type = 'button'
+  badge.className = POPUP_BADGE_CLASS
+  badge.dataset.signature = signature
+
+  if (!place || ratingValue === null) {
+    badge.dataset.variant = 'cta'
+    badge.title = popupCopy.cta
+    badge.setAttribute('aria-label', popupCopy.cta)
+
+    const text = document.createElement('span')
+    text.className = 'ec-popup-cta-text'
+    text.textContent = popupCopy.cta
+    badge.append(text, buildPopupIcon(POPUP_SEARCH_ICON_SVG, 'ec-popup-action'))
+  } else {
+    badge.dataset.variant = 'value'
+    const ariaLabel = popupCopy.valueAriaLabel(ratingText)
+    badge.title = ariaLabel
+    badge.setAttribute('aria-label', ariaLabel)
+
+    const score = document.createElement('span')
+    score.className = 'ec-popup-score'
+    score.textContent = ratingText
+
+    const brand = document.createElement('span')
+    brand.className = 'ec-popup-brand'
+    brand.textContent = popupCopy.brand
+
+    const info = buildPopupIcon(POPUP_INFO_ICON_SVG, 'ec-popup-info')
+    info.setAttribute('role', 'img')
+    info.setAttribute('aria-label', infoText)
+    info.title = infoText
+
+    const action = buildPopupIcon(POPUP_SEARCH_ICON_SVG, 'ec-popup-action')
+    action.setAttribute('role', 'img')
+    action.setAttribute('aria-label', popupCopy.openReviewsLabel)
+    action.title = popupCopy.openReviewsLabel
+
+    badge.append(score, buildPopupStars(ratingValue), brand, info, action)
+  }
+
+  badge.addEventListener('click', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    onActivate()
+  })
+
+  return { badge, signature }
+}
+
+/**
+ * Insert (or refresh) an ECHTSTERN badge inside `root`, anchored after `anchor`.
+ * Dedupes by content signature so unchanged badges are left in place.
+ */
+const renderAnchoredBadge = (
+  root: HTMLElement,
+  anchor: HTMLElement,
+  match: PopupMatch | null,
+  settings: Awaited<ReturnType<typeof loadSettings>>,
+  copy: Messages,
+  locale: Locale,
+  onActivate: () => void,
+) => {
+  const existingBadge = root.querySelector<HTMLElement>(`.${POPUP_BADGE_CLASS}`)
+  const { badge, signature } = buildEchtsternBadgeElement(match, settings, copy, locale, onActivate)
+
+  if (existingBadge?.dataset.signature === signature && anchor.parentElement?.contains(existingBadge)) {
+    return
+  }
+
+  withObserverPaused(() => {
+    existingBadge?.remove()
+    anchor.insertAdjacentElement('afterend', badge)
+  })
+}
+
+const renderPopupBadge = (
+  extraction: PopupExtraction,
+  match: PopupMatch | null,
+  settings: Awaited<ReturnType<typeof loadSettings>>,
+  copy: Messages,
+  locale: Locale,
+) => {
+  const anchorTarget = extraction.ratingAnchor.closest<HTMLElement>('button') ?? extraction.ratingAnchor
+  renderAnchoredBadge(extraction.popupRoot, anchorTarget, match, settings, copy, locale, () =>
+    openHoveredPlaceReviews(extraction),
+  )
+}
+
+const renderResultBadge = (
+  extraction: ResultExtraction,
+  match: PopupMatch | null,
+  settings: Awaited<ReturnType<typeof loadSettings>>,
+  copy: Messages,
+  locale: Locale,
+) => {
+  const anchorTarget = extraction.ratingAnchor.closest<HTMLElement>('.W4Efsd') ?? extraction.ratingAnchor
+  renderAnchoredBadge(extraction.articleRoot, anchorTarget, match, settings, copy, locale, () =>
+    openPlaceAndShowReviews(extraction.openTarget),
+  )
+}
+
+/**
+ * Resolve the category line element in the sidebar overview so we can anchor the
+ * badge where the business category is shown. The category is usually a button,
+ * but Google sometimes renders it as a plain span.
+ */
+const findBusinessCategoryElement = (): HTMLElement | null => {
+  for (const selector of GOOGLE_MAPS_SELECTORS.businessCategoryCandidates) {
+    const element = document.querySelector<HTMLElement>(selector)
+    if (element && normalizeBusinessCategory(element.textContent)) {
+      return element
+    }
+  }
+
+  return null
+}
+
+type SidebarOverviewExtraction = {
+  candidate: PopupCandidate
+  anchorLine: HTMLElement
+}
+
+/**
+ * Extract the open place in the sidebar overview. Unlike the hover popup, this
+ * surface is URL-addressable, so we can attach the reliable Google CID and let
+ * the backend return an exact identity match.
+ */
+const extractSidebarOverviewCandidate = (): SidebarOverviewExtraction | null => {
+  if (isReviewsTabActive()) {
+    return null
+  }
+
+  const cid = extractGoogleMapsCid(location.href)
+  if (!cid) {
+    return null
+  }
+
+  const name = findPlaceName()
+  if (!name || isGenericGoogleMapsTitle(name)) {
+    return null
+  }
+
+  const displayedRating = parseRating(findRatingText())
+  if (displayedRating === null) {
+    return null
+  }
+
+  const reviewCount = parseReviewCount(findReviewCountText())
+  if (reviewCount === null) {
+    return null
+  }
+
+  const categoryElement = findBusinessCategoryElement()
+  const anchorLine = categoryElement?.closest<HTMLElement>('.fontBodyMedium') ?? categoryElement
+  if (!anchorLine) {
+    return null
+  }
+
+  return {
+    candidate: {
+      name,
+      displayedRating,
+      reviewCount,
+      businessCategory: normalizeBusinessCategory(categoryElement?.textContent),
+      cid,
+    },
+    anchorLine,
+  }
+}
+
+const renderSidebarBadge = (
+  anchorLine: HTMLElement,
+  match: PopupMatch | null,
+  settings: Awaited<ReturnType<typeof loadSettings>>,
+  copy: Messages,
+  locale: Locale,
+) => {
+  const existingBadge = document.getElementById(SIDEBAR_BADGE_ID)
+  const { badge, signature } = buildEchtsternBadgeElement(match, settings, copy, locale, switchToReviewsTab)
+  badge.id = SIDEBAR_BADGE_ID
+
+  if (existingBadge?.dataset.signature === signature && anchorLine.parentElement?.contains(existingBadge)) {
+    return
+  }
+
+  withObserverPaused(() => {
+    existingBadge?.remove()
+    anchorLine.insertAdjacentElement('afterend', badge)
+  })
+}
+
+const scanSidebarOverview = async () => {
+  let extraction: SidebarOverviewExtraction | null
+  try {
+    extraction = extractSidebarOverviewCandidate()
+  } catch (error) {
+    logUnexpectedExtensionError('Sidebar overview extraction failed', error)
+    return
+  }
+
+  if (!extraction) {
+    withObserverPaused(() => document.getElementById(SIDEBAR_BADGE_ID)?.remove())
+    return
+  }
+
+  injectStyles()
+
+  let settings: Awaited<ReturnType<typeof loadSettings>>
+  try {
+    settings = await loadSettings()
+  } catch (error) {
+    logUnexpectedExtensionError('Settings load failed', error)
+    return
+  }
+
+  const locale = resolveLocaleSetting(settings.locale)
+  const copy = getMessages(locale)
+  const cacheKey = `cid:${extraction.candidate.cid ?? ''}`
+
+  if (cidMatchCache.has(cacheKey)) {
+    renderSidebarBadge(extraction.anchorLine, cidMatchCache.get(cacheKey) ?? null, settings, copy, locale)
+    return
+  }
+
+  if (cidPendingKeys.has(cacheKey)) {
+    return
+  }
+
+  cidPendingKeys.add(cacheKey)
+  const matches = await fetchPopupMatchesViaBackground([extraction.candidate])
+  cidPendingKeys.delete(cacheKey)
+
+  if (!matches) {
+    return
+  }
+
+  const match = matches[0] ?? null
+  cidMatchCache.set(cacheKey, match)
+
+  const current = extractSidebarOverviewCandidate()
+  if (current && `cid:${current.candidate.cid ?? ''}` === cacheKey) {
+    renderSidebarBadge(current.anchorLine, match, settings, copy, locale)
+  }
+}
+
+const scanResults = async () => {
+  let extractions: ResultExtraction[]
+  try {
+    extractions = extractResultsCandidates().filter((extraction) => Boolean(extraction.candidate.cid))
+  } catch (error) {
+    logUnexpectedExtensionError('Results extraction failed', error)
+    return
+  }
+
+  if (extractions.length === 0) {
+    return
+  }
+
+  injectStyles()
+
+  let settings: Awaited<ReturnType<typeof loadSettings>>
+  try {
+    settings = await loadSettings()
+  } catch (error) {
+    logUnexpectedExtensionError('Settings load failed', error)
+    return
+  }
+
+  const locale = resolveLocaleSetting(settings.locale)
+  const copy = getMessages(locale)
+  const cacheKeyFor = (extraction: ResultExtraction) => `cid:${extraction.candidate.cid ?? ''}`
+
+  for (const extraction of extractions) {
+    const key = cacheKeyFor(extraction)
+    if (cidMatchCache.has(key)) {
+      renderResultBadge(extraction, cidMatchCache.get(key) ?? null, settings, copy, locale)
+    }
+  }
+
+  const uncached = extractions.filter((extraction) => {
+    const key = cacheKeyFor(extraction)
+    return !cidMatchCache.has(key) && !cidPendingKeys.has(key)
+  })
+
+  if (uncached.length === 0) {
+    return
+  }
+
+  const batch = uncached.slice(0, POPUP_MATCH_BATCH_SIZE)
+  const keys = batch.map(cacheKeyFor)
+  keys.forEach((key) => cidPendingKeys.add(key))
+
+  const matches = await fetchPopupMatchesViaBackground(batch.map((extraction) => extraction.candidate))
+
+  keys.forEach((key) => cidPendingKeys.delete(key))
+
+  if (!matches) {
+    return
+  }
+
+  batch.forEach((extraction, index) => {
+    cidMatchCache.set(cacheKeyFor(extraction), matches[index] ?? null)
+  })
+
+  schedulePopupScan()
+}
+
+const scanPopups = async () => {
+  let extractions: PopupExtraction[]
+  try {
+    extractions = extractPopupCandidates()
+  } catch (error) {
+    logUnexpectedExtensionError('Popup extraction failed', error)
+    return
+  }
+
+  if (extractions.length === 0) {
+    return
+  }
+
+  injectStyles()
+
+  let settings: Awaited<ReturnType<typeof loadSettings>>
+  try {
+    settings = await loadSettings()
+  } catch (error) {
+    logUnexpectedExtensionError('Settings load failed', error)
+    return
+  }
+
+  const locale = resolveLocaleSetting(settings.locale)
+  const copy = getMessages(locale)
+
+  for (const extraction of extractions) {
+    const key = popupCandidateCacheKey(extraction.candidate)
+    if (popupMatchCache.has(key)) {
+      renderPopupBadge(extraction, popupMatchCache.get(key) ?? null, settings, copy, locale)
+    }
+  }
+
+  const uncached = extractions.filter((extraction) => {
+    const key = popupCandidateCacheKey(extraction.candidate)
+    return !popupMatchCache.has(key) && !popupPendingKeys.has(key)
+  })
+
+  if (uncached.length === 0) {
+    return
+  }
+
+  const batch = uncached.slice(0, POPUP_MATCH_BATCH_SIZE)
+  const keys = batch.map((extraction) => popupCandidateCacheKey(extraction.candidate))
+  keys.forEach((key) => popupPendingKeys.add(key))
+
+  const matches = await fetchPopupMatchesViaBackground(batch.map((extraction) => extraction.candidate))
+
+  keys.forEach((key) => popupPendingKeys.delete(key))
+
+  if (!matches) {
+    return
+  }
+
+  batch.forEach((extraction, index) => {
+    popupMatchCache.set(popupCandidateCacheKey(extraction.candidate), matches[index] ?? null)
+  })
+
+  schedulePopupScan()
+}
+
+const schedulePopupScan = () => {
+  if (popupDebounceTimer !== undefined) {
+    return
+  }
+
+  popupDebounceTimer = window.setTimeout(() => {
+    popupDebounceTimer = undefined
+    void scanPopups().catch((error: unknown) => logUnexpectedExtensionError('Popup scan failed', error))
+    void scanSidebarOverview().catch((error: unknown) =>
+      logUnexpectedExtensionError('Sidebar overview scan failed', error),
+    )
+    void scanResults().catch((error: unknown) => logUnexpectedExtensionError('Results scan failed', error))
+  }, POPUP_SCAN_DEBOUNCE_MS)
+}
+
 const scanAndRender = async () => {
   lastScanStartedAt = Date.now()
   rememberPlaceName()
@@ -1599,6 +2318,7 @@ observer = new MutationObserver((mutations) => {
 
   if (!onlyOwnMutations) {
     scheduleScan()
+    schedulePopupScan()
   }
 })
 observer.observe(document.documentElement, { childList: true, subtree: true })
@@ -1618,3 +2338,4 @@ if (browser?.storage?.onChanged) {
 
 lastNavigationPlaceKey = findPlaceKeyFromUrl()
 scheduleScan()
+schedulePopupScan()
