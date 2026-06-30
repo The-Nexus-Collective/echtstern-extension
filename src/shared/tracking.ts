@@ -27,6 +27,8 @@ export type ObservationPayload = {
   placeKey: string
   placeName?: string
   businessCategory?: string
+  websiteUrl?: string
+  websiteChecked?: boolean
   sourceUrl: string
   rating: number
   displayedRating: number
@@ -155,6 +157,8 @@ export const buildObservationPayload = ({
   placeKey,
   placeName,
   businessCategory,
+  websiteUrl,
+  websiteChecked,
   sourceUrl,
   latitude,
   longitude,
@@ -165,6 +169,8 @@ export const buildObservationPayload = ({
   placeKey: string
   placeName?: string
   businessCategory?: string
+  websiteUrl?: string
+  websiteChecked?: boolean
   sourceUrl: string
   latitude?: number
   longitude?: number
@@ -174,6 +180,8 @@ export const buildObservationPayload = ({
   placeKey,
   placeName,
   businessCategory,
+  websiteUrl,
+  websiteChecked,
   sourceUrl,
   rating: result.originalRating,
   displayedRating: result.displayedRating ?? result.originalRating,
@@ -227,7 +235,15 @@ export const fetchPlaceMatches = async (candidates: PopupCandidate[]): Promise<P
   }
 }
 
-export const postObservation = async (payload: ObservationPayload): Promise<boolean> => {
+export type PostObservationResult = {
+  ok: boolean
+  // The server accepted the request but could not persist it yet and wants the
+  // client to retry (e.g. a bare ?cid= URL without coordinates). When true the
+  // client must NOT mark the place as sent, so the next scan can re-send.
+  retryable: boolean
+}
+
+export const postObservation = async (payload: ObservationPayload): Promise<PostObservationResult> => {
   logTracking('Posting observation', {
     endpoint: TRACKING_ENDPOINT,
     placeKey: payload.placeKey,
@@ -243,11 +259,20 @@ export const postObservation = async (payload: ObservationPayload): Promise<bool
     method: 'POST',
   })
 
+  let retryable = false
+  try {
+    const data = (await response.json()) as { retryable?: boolean } | null
+    retryable = data?.retryable === true
+  } catch {
+    // Response body was not JSON (e.g. an error page); treat as non-retryable.
+  }
+
   logTracking('Observation response', {
     ok: response.ok,
+    retryable,
     status: response.status,
     statusText: response.statusText,
   })
 
-  return response.ok
+  return { ok: response.ok, retryable }
 }

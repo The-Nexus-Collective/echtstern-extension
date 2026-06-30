@@ -22,10 +22,25 @@ describe('isReviewsContext', () => {
     ).toBe(true)
   })
 
-  it('detects the reviews context via the reviews URL marker even without a tab label', () => {
+  it('detects the reviews context via the reviews URL marker when no tab label is available', () => {
+    expect(isReviewsContext({ activeTabLabels: [], href: PLACE_REVIEWS_URL })).toBe(true)
+  })
+
+  it('vetoes a stale carried-over reviews URL marker when the Overview tab is active', () => {
+    // Google keeps `!9m1!1b1` in the URL when you switch to another place, so the marker
+    // alone must not win over a positively-detected non-reviews ("Übersicht") tab.
     expect(
       isReviewsContext({ activeTabLabels: ['Übersicht'], href: PLACE_REVIEWS_URL }),
-    ).toBe(true)
+    ).toBe(false)
+  })
+
+  it('vetoes the URL marker for any non-reviews tab (e.g. Info)', () => {
+    expect(
+      isReviewsContext({
+        activeTabLabels: ['Einstein Restaurant Cafe Bar Info'],
+        href: PLACE_REVIEWS_URL,
+      }),
+    ).toBe(false)
   })
 
   it('does not treat a reviews URL marker on a non-place page as reviews', () => {

@@ -32,6 +32,11 @@ export const GOOGLE_MAPS_SELECTORS = {
     'h1',
     '[role="main"] h1',
   ],
+  websiteLinkCandidates: [
+    'a[data-item-id="authority"][href]',
+    'a[aria-label^="Website:"][href]',
+    'a[aria-label*="Website"][href]',
+  ],
 } as const
 
 export const REMOVED_NOTICE_TEXT_PATTERN = /(diffamierung|defamation)/i

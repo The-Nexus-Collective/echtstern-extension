@@ -1,6 +1,6 @@
 {
   "name": "echtstern-extension",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Open-source Chrome extension for contextualizing Google Maps ratings.",
   "license": "MIT",
   "type": "module",
@@ -24,13 +24,15 @@
     "build": "pnpm run build:chrome",
     "build:chrome": "tsc -b && vite build && vite build --config vite.content.config.ts && vite build --config vite.background.config.ts",
     "build:firefox": "tsc -b && BROWSER_TARGET=firefox vite build && BROWSER_TARGET=firefox vite build --config vite.content.config.ts && BROWSER_TARGET=firefox vite build --config vite.background.config.ts",
+    "build:chrome:local": "VITE_ECHTSTERN_API_BASE_URL=${VITE_ECHTSTERN_API_BASE_URL:-http://localhost:3000} pnpm run build:chrome",
+    "build:firefox:local": "VITE_ECHTSTERN_API_BASE_URL=${VITE_ECHTSTERN_API_BASE_URL:-http://localhost:3000} pnpm run build:firefox",
     "typecheck": "tsc -b",
     "test": "vitest run",
     "lint": "eslint .",
     "lint:firefox": "web-ext lint --source-dir dist",
     "package:chrome": "node scripts/package-chrome.mjs",
     "run:firefox": "web-ext run --source-dir dist",
-    "package:firefox": "web-ext build --source-dir dist --artifacts-dir artifacts --overwrite-dest",
+    "package:firefox": "node scripts/package-firefox.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

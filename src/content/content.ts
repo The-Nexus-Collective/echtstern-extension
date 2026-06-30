@@ -4,6 +4,7 @@ import { formatRating } from '../shared/format'
 import { getMessages, localeToIntl, resolveLocaleSetting, type Locale, type Messages } from '../shared/i18n'
 import { LATEST_CONTEXT_STORAGE_KEY, LATEST_ESTIMATE_STORAGE_KEY, loadSettings, SETTINGS_STORAGE_KEY } from '../shared/settings'
 import {
+  API_BASE_URL,
   TRACKING_ENABLED_BY_DEFAULT,
   type ObservationPayload,
   buildObservationPayload,
@@ -63,6 +64,13 @@ const STYLE_ID = 'echtstern-content-style'
 const POPUP_BADGE_CLASS = 'echtstern-popup-badge'
 const SIDEBAR_BADGE_ID = 'echtstern-sidebar-badge'
 
+// Local-only debug overlay: enabled only for local builds (the `:local` scripts point
+// the extension at a localhost API). Production builds leave it off automatically.
+const DEBUG_OVERLAY_ENABLED = /localhost|127\.0\.0\.1/i.test(
+  (import.meta.env.VITE_ECHTSTERN_API_BASE_URL as string | undefined) ?? '',
+)
+const DEBUG_OVERLAY_ID = 'echtstern-debug-overlay'
+
 const STAR_VALUES_DESC: StarValue[] = [5, 4, 3, 2, 1]
 const OUTSIDE_GERMANY_SIGNATURE = 'outside-germany'
 const NO_REMOVALS_TRACKING_STABILIZATION_MS = 2_000
@@ -108,6 +116,14 @@ let latestPlaceKey = ''
 let latestPlaceName: string | undefined
 let latestBusinessCategoryPlaceKey = ''
 let latestBusinessCategory: string | undefined
+let latestWebsiteUrlPlaceKey = ''
+let latestWebsiteUrl: string | undefined
+let latestWebsiteChecked = false
+let debugCategoryCapturedAt: string | undefined
+let debugWebsiteCapturedAt: string | undefined
+let debugLastSend = '—'
+let debugLastPayload: ObservationPayload | null = null
+let debugLastPayloadAt: string | undefined
 let debounceTimer: number | undefined
 let noRemovalsTrackingTimer: number | undefined
 let noRemovalsTrackingCandidate: NoRemovalsTrackingCandidate | undefined
@@ -136,7 +152,7 @@ const isOwnNode = (node: Node): boolean => {
   const element = node instanceof Element ? node : node.parentElement
   return Boolean(
     element?.closest(
-      `#${LEGACY_BANNER_ID}, #${TRIGGER_ID}, #${TRIGGER_SPACER_BEFORE_ID}, #${INLINE_CARD_ID}, #${INLINE_CARD_SPACER_BEFORE_ID}, #${OUTSIDE_GERMANY_CARD_ID}, #${OUTSIDE_GERMANY_CARD_SPACER_BEFORE_ID}, #${STATUS_BADGE_ID}, #${STYLE_ID}, .${POPUP_BADGE_CLASS}`,
+      `#${LEGACY_BANNER_ID}, #${TRIGGER_ID}, #${TRIGGER_SPACER_BEFORE_ID}, #${INLINE_CARD_ID}, #${INLINE_CARD_SPACER_BEFORE_ID}, #${OUTSIDE_GERMANY_CARD_ID}, #${OUTSIDE_GERMANY_CARD_SPACER_BEFORE_ID}, #${STATUS_BADGE_ID}, #${STYLE_ID}, #${DEBUG_OVERLAY_ID}, .${POPUP_BADGE_CLASS}`,
     ),
   )
 }
@@ -639,6 +655,228 @@ const findVisibleBusinessCategory = (): string | undefined => {
   return undefined
 }
 
+const TRACKING_QUERY_PARAMS = new Set([
+  'gclid',
+  'gbraid',
+  'wbraid',
+  'dclid',
+  'fbclid',
+  'yclid',
+  'msclkid',
+  'mc_cid',
+  'mc_eid',
+  'igshid',
+  'ref',
+  'ref_src',
+])
+
+const isTrackingParam = (key: string): boolean =>
+  /^utm_/i.test(key) || TRACKING_QUERY_PARAMS.has(key.toLowerCase())
+
+const normalizeWebsiteUrl = (value: string | null | undefined): string | undefined => {
+  const trimmed = value?.trim()
+  if (!trimmed || !/^https?:\/\//i.test(trimmed) || trimmed.length > 2_000) {
+    return undefined
+  }
+
+  try {
+    const url = new URL(trimmed)
+    for (const key of [...url.searchParams.keys()]) {
+      if (isTrackingParam(key)) {
+        url.searchParams.delete(key)
+      }
+    }
+    return url.toString()
+  } catch {
+    return trimmed
+  }
+}
+
+// Proxy for "the overview info section is rendered": these rows render together
+// with the website row, so their presence + a missing website link means the
+// place genuinely has no website.
+const isOverviewInfoLoaded = (): boolean =>
+  Boolean(document.querySelector('[data-item-id="address"], [data-item-id="oloc"]'))
+
+const GOOGLE_HOST_PATTERN = /(?:^|\.)google\.[a-z.]+$/i
+const REDIRECT_TARGET_PARAMS = ['adurl', 'url', 'q', 'dest', 'continue']
+
+// Google sometimes wraps the website link in an ad/redirect URL like
+// `https://www.google.com/aclk?…&adurl=…`. Recover the real target from the query
+// params when present.
+const isGoogleRedirectUrl = (value: string): boolean => {
+  try {
+    const url = new URL(value)
+    return (
+      GOOGLE_HOST_PATTERN.test(url.hostname) &&
+      (/^\/(aclk|url|searchredirect)/i.test(url.pathname) ||
+        REDIRECT_TARGET_PARAMS.some((key) => url.searchParams.has(key)))
+    )
+  } catch {
+    return false
+  }
+}
+
+const unwrapGoogleRedirect = (rawUrl: string): string => {
+  try {
+    const url = new URL(rawUrl)
+    if (!isGoogleRedirectUrl(rawUrl)) {
+      return rawUrl
+    }
+    for (const key of REDIRECT_TARGET_PARAMS) {
+      const target = url.searchParams.get(key)
+      if (target && /^https?:\/\//i.test(target)) {
+        return target
+      }
+    }
+    return rawUrl
+  } catch {
+    return rawUrl
+  }
+}
+
+const DOMAIN_TOKEN_PATTERN =
+  /^(?:https?:\/\/)?((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})(\/[^\s]*)?$/i
+
+// When the href is an unrecoverable Google redirect, the real domain is still shown as
+// the link's aria-label ("Website: shalimar-ulm.de") or visible text ("shalimar-ulm.de").
+const websiteUrlFromDisplayText = (anchor: HTMLAnchorElement): string | undefined => {
+  const sources = [
+    anchor.getAttribute('aria-label')?.replace(/^[^:]*:\s*/, ''),
+    anchor.querySelector('.Io6YTe')?.textContent,
+    anchor.textContent,
+  ]
+
+  for (const source of sources) {
+    const token = source?.replace(/\s+/g, ' ').trim().split(' ')[0]
+    const match = token ? DOMAIN_TOKEN_PATTERN.exec(token) : null
+    if (match) {
+      return `https://${match[1]}${match[2] ?? ''}`
+    }
+  }
+
+  return undefined
+}
+
+const findVisibleWebsiteUrl = (): string | undefined => {
+  for (const selector of GOOGLE_MAPS_SELECTORS.websiteLinkCandidates) {
+    const anchor = document.querySelector<HTMLAnchorElement>(selector)
+    if (!anchor) {
+      continue
+    }
+
+    const rawHref = anchor.getAttribute('href')
+    if (rawHref) {
+      const normalized = normalizeWebsiteUrl(unwrapGoogleRedirect(rawHref))
+      if (normalized && !isGoogleRedirectUrl(normalized)) {
+        return normalized
+      }
+    }
+
+    // href missing or an unrecoverable Google redirect → use the displayed domain.
+    const fromDisplayText = normalizeWebsiteUrl(websiteUrlFromDisplayText(anchor))
+    if (fromDisplayText) {
+      return fromDisplayText
+    }
+  }
+
+  return undefined
+}
+
+// TODO: temporary local debug overlay – remove once link/category scraping is verified.
+const renderDebugOverlay = () => {
+  if (!DEBUG_OVERLAY_ENABLED) {
+    return
+  }
+
+  let overlay = document.getElementById(DEBUG_OVERLAY_ID)
+  if (!overlay) {
+    overlay = document.createElement('div')
+    overlay.id = DEBUG_OVERLAY_ID
+    overlay.style.cssText = [
+      'position:fixed',
+      'top:8px',
+      'right:8px',
+      'z-index:2147483647',
+      'max-width:380px',
+      'padding:8px 10px',
+      'background:rgba(17,17,17,0.9)',
+      'color:#fff',
+      'font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace',
+      'border-radius:8px',
+      'box-shadow:0 2px 8px rgba(0,0,0,0.4)',
+      'pointer-events:none',
+      'white-space:pre-wrap',
+      'word-break:break-all',
+    ].join(';')
+    document.documentElement.append(overlay)
+  }
+
+  const liveWebsite = findVisibleWebsiteUrl()
+  const liveCategory = findVisibleBusinessCategory()
+  const currentPlaceKey = findPlaceKey()
+  const liveUrlName = findPlaceNameFromUrl()
+  const liveDomName = findVisiblePlaceName()
+  const reviewsActive = (() => {
+    try {
+      return isReviewsTabActive()
+    } catch {
+      return false
+    }
+  })()
+
+  const websiteAnchorCount = GOOGLE_MAPS_SELECTORS.websiteLinkCandidates.reduce(
+    (total, selector) => total + document.querySelectorAll(selector).length,
+    0,
+  )
+  const rawAuthorityHref =
+    document.querySelector<HTMLAnchorElement>('a[data-item-id="authority"]')?.getAttribute('href') ?? '—'
+
+  const payload = debugLastPayload
+  const starBreakdown = payload?.starBreakdown
+  const payloadLines = payload
+    ? [
+        `payload @ ${debugLastPayloadAt ?? '—'}`,
+        `  placeKey: ${payload.placeKey}`,
+        `  placeName: ${payload.placeName ?? '⟨FEHLT⟩'}`,
+        `  category: ${payload.businessCategory ?? '—'}`,
+        `  websiteUrl: ${payload.websiteUrl ?? '—'}`,
+        `  websiteChecked: ${payload.websiteChecked ? 'ja' : 'nein'}`,
+        `  rating: ${payload.rating}  angezeigt: ${payload.displayedRating}  count: ${payload.reviewCount}`,
+        `  coords: ${payload.latitude ?? '—'}, ${payload.longitude ?? '—'}`,
+        `  removedRange: ${
+          payload.removedRange
+            ? `${payload.removedRange.min}–${payload.removedRange.max}${payload.removedRange.isOpenEnded ? '+' : ''}`
+            : '—'
+        }`,
+        `  stars(1-5): ${
+          starBreakdown ? ([1, 2, 3, 4, 5] as const).map((star) => starBreakdown[star] ?? '·').join('/') : '—'
+        }`,
+        `  locale: ${payload.locale}`,
+      ]
+    : ['payload: (noch nichts vorbereitet)']
+
+  overlay.textContent = [
+    'ECHTSTERN DEBUG (Cache)',
+    `tab: ${reviewsActive ? 'Rezensionen' : 'Übersicht/andere'}`,
+    `placeKey (live): ${currentPlaceKey || '—'}`,
+    `placeKey (last): ${latestPlaceKey || '—'}`,
+    `name (url): ${liveUrlName ?? '—'}`,
+    `name (dom): ${liveDomName ?? '—'}`,
+    `category (live): ${liveCategory ?? '—'}`,
+    `category (cached): ${latestBusinessCategory ?? '—'}${debugCategoryCapturedAt ? ` @ ${debugCategoryCapturedAt}` : ''}`,
+    `website (live): ${liveWebsite ?? '—'}`,
+    `website (cached): ${latestWebsiteUrl ?? (latestWebsiteChecked ? 'keine (geprüft)' : '—')}${debugWebsiteCapturedAt ? ` @ ${debugWebsiteCapturedAt}` : ''}`,
+    `website cachedKey: ${latestWebsiteUrlPlaceKey || '—'}`,
+    `authority anchors: ${websiteAnchorCount}`,
+    `authority href (raw): ${rawAuthorityHref}`,
+    `api: ${API_BASE_URL}`,
+    `lastSend: ${debugLastSend}`,
+    '— letzte gespeicherte Daten —',
+    ...payloadLines,
+  ].join('\n')
+}
+
 const titleCaseGoogleCategorySlug = (slug: string): string | undefined => {
   const words = slug
     .split('_')
@@ -761,6 +999,34 @@ const findPlaceNameFromUrl = (): string | undefined => {
 
 const findPlaceKeyFromUrl = (): string | undefined => placeKeyFromUrl(location.href)
 
+const stripTrailingEllipsis = (value: string): string =>
+  value.replace(/(\u2026|\.{3})\s*$/u, '').trim()
+
+// During a profile switch Google updates the URL (and therefore the place key) before
+// the panel content. If the visible place name does not match the URL place name we are
+// mid-transition and the rating/review DOM still belongs to the previous place, so we
+// must not persist an observation with that stale data.
+const isPlaceContextConsistent = (): boolean => {
+  const urlName = findPlaceNameFromUrl()
+  const domName = findVisiblePlaceName()
+
+  if (!urlName || !domName) {
+    return true
+  }
+
+  const normalizedUrlName = stripTrailingEllipsis(urlName).toLowerCase()
+  const normalizedDomName = stripTrailingEllipsis(domName).toLowerCase()
+
+  if (!normalizedUrlName || !normalizedDomName) {
+    return true
+  }
+
+  return (
+    normalizedUrlName.startsWith(normalizedDomName) ||
+    normalizedDomName.startsWith(normalizedUrlName)
+  )
+}
+
 type PlaceIdentity = {
   key: string
   name?: string
@@ -831,6 +1097,9 @@ const rememberPlaceName = (): string | undefined => {
     latestPlaceName = undefined
     latestBusinessCategoryPlaceKey = ''
     latestBusinessCategory = undefined
+    latestWebsiteUrlPlaceKey = ''
+    latestWebsiteUrl = undefined
+    latestWebsiteChecked = false
   }
 
   if (identity?.name) {
@@ -854,6 +1123,9 @@ const rememberBusinessCategory = (placeKey = findPlaceKey()): string | undefined
   const urlBusinessCategory = findBusinessCategoryFromUrl()
   const currentBusinessCategory = visibleBusinessCategory ?? urlBusinessCategory
   if (currentBusinessCategory) {
+    if (currentBusinessCategory !== latestBusinessCategory) {
+      debugCategoryCapturedAt = new Date().toLocaleTimeString()
+    }
     latestBusinessCategoryPlaceKey = placeKey
     latestBusinessCategory = currentBusinessCategory
   }
@@ -861,6 +1133,39 @@ const rememberBusinessCategory = (placeKey = findPlaceKey()): string | undefined
   const rememberedBusinessCategory = latestBusinessCategoryPlaceKey === placeKey ? latestBusinessCategory : undefined
 
   return rememberedBusinessCategory
+}
+
+type WebsiteCapture = { websiteUrl?: string; websiteChecked: boolean }
+
+const rememberWebsiteUrl = (placeKey = findPlaceKey()): WebsiteCapture => {
+  if (!placeKey) {
+    return { websiteChecked: false }
+  }
+
+  const currentWebsiteUrl = findVisibleWebsiteUrl()
+
+  if (currentWebsiteUrl) {
+    if (currentWebsiteUrl !== latestWebsiteUrl) {
+      debugWebsiteCapturedAt = new Date().toLocaleTimeString()
+    }
+    latestWebsiteUrlPlaceKey = placeKey
+    latestWebsiteUrl = currentWebsiteUrl
+    latestWebsiteChecked = true
+  } else if (isOverviewInfoLoaded()) {
+    // Overview is loaded but no website link exists → confirmed "checked, no website".
+    // Never drop a real URL already captured for this place.
+    if (!latestWebsiteChecked || latestWebsiteUrlPlaceKey !== placeKey) {
+      debugWebsiteCapturedAt = new Date().toLocaleTimeString()
+    }
+    latestWebsiteUrlPlaceKey = placeKey
+    latestWebsiteChecked = true
+  }
+
+  if (latestWebsiteUrlPlaceKey !== placeKey) {
+    return { websiteChecked: false }
+  }
+
+  return { websiteUrl: latestWebsiteUrl, websiteChecked: latestWebsiteChecked }
 }
 
 const removeLegacyBanner = () => {
@@ -1379,10 +1684,12 @@ const persistOutsideGermanyContext = async () => {
   }
 }
 
-const sendObservationViaBackground = async (payload: ObservationPayload): Promise<boolean> => {
+const sendObservationViaBackground = async (
+  payload: ObservationPayload,
+): Promise<{ ok: boolean; retryable: boolean }> => {
   if (!browser?.runtime?.sendMessage) {
     logTracking('Cannot send observation: runtime.sendMessage unavailable')
-    return false
+    return { ok: false, retryable: false }
   }
 
   let response: unknown
@@ -1393,12 +1700,12 @@ const sendObservationViaBackground = async (payload: ObservationPayload): Promis
     })
   } catch (error) {
     logUnexpectedExtensionError('Observation background message failed', error)
-    return false
+    return { ok: false, retryable: false }
   }
 
-  const ok = Boolean((response as { ok?: boolean } | undefined)?.ok)
+  const result = response as { ok?: boolean; retryable?: boolean } | undefined
   logTracking('Background observation result', response)
-  return ok
+  return { ok: Boolean(result?.ok), retryable: Boolean(result?.retryable) }
 }
 
 const clearNoRemovalsTrackingCandidate = () => {
@@ -1428,6 +1735,13 @@ const prepareObservation = async (
     return null
   }
 
+  if (!isPlaceContextConsistent()) {
+    logTracking('Skipped observation: place context not settled (URL/DOM name mismatch)', {
+      placeKey: placeIdentity.key,
+    })
+    return null
+  }
+
   const hasRemovedRange = result.noRemovedReviews !== true
   const installId = await ensureInstallId()
   if (!installId) {
@@ -1437,20 +1751,30 @@ const prepareObservation = async (
 
   const coordinates = findCoordinatesFromUrl()
   const businessCategory = rememberBusinessCategory(placeIdentity.key)
+  const { websiteUrl, websiteChecked } = rememberWebsiteUrl(placeIdentity.key)
+
+  const payload = buildObservationPayload({
+    result,
+    placeKey: placeIdentity.key,
+    placeName: placeIdentity.name,
+    businessCategory,
+    websiteUrl,
+    websiteChecked,
+    sourceUrl: location.href,
+    latitude: coordinates?.latitude,
+    longitude: coordinates?.longitude,
+    locale,
+    installId,
+  })
+
+  // Debug: remember the exact payload that will be sent so the overlay can show it.
+  debugLastPayload = payload
+  debugLastPayloadAt = new Date().toLocaleTimeString()
+  renderDebugOverlay()
 
   return {
     hasRemovedRange,
-    payload: buildObservationPayload({
-      result,
-      placeKey: placeIdentity.key,
-      placeName: placeIdentity.name,
-      businessCategory,
-      sourceUrl: location.href,
-      latitude: coordinates?.latitude,
-      longitude: coordinates?.longitude,
-      locale,
-      installId,
-    }),
+    payload,
     placeKey: placeIdentity.key,
   }
 }
@@ -1459,22 +1783,35 @@ const sendPreparedObservation = async ({ hasRemovedRange, payload, placeKey }: P
   const shouldSend = await shouldSendObservation(placeKey, { hasRemovedRange })
   if (!shouldSend) {
     logTracking('Skipped observation: local throttle active', { hasRemovedRange, placeKey })
+    // TODO: temporary debug – remove once website scraping is verified.
+    debugLastSend = `${new Date().toLocaleTimeString()} throttled (web=${payload.websiteUrl ? 'y' : 'n'})`
+    renderDebugOverlay()
     return
   }
 
   logTracking('Prepared observation payload', payload)
 
   try {
-    const sent = await sendObservationViaBackground(payload)
-    if (sent) {
+    const { ok, retryable } = await sendObservationViaBackground(payload)
+    // TODO: temporary debug – remove once website scraping is verified.
+    debugLastSend = `${new Date().toLocaleTimeString()} ok=${ok}${retryable ? ' retryable' : ''} (web=${payload.websiteUrl ? 'y' : 'n'})`
+    renderDebugOverlay()
+    if (ok && !retryable) {
       await markObservationSent(placeKey, { hasRemovedRange })
       logTracking('Observation sent and throttle updated', { hasRemovedRange, placeKey })
+    } else if (retryable) {
+      // Server could not persist yet (e.g. cid-only URL without coordinates).
+      // Do not throttle so the next scan re-sends once the URL resolves.
+      logTracking('Observation deferred for retry; throttle not updated', { placeKey })
     } else {
       logTracking('Observation not accepted by background/API', { placeKey })
     }
   } catch (error) {
     // Tracking must never affect the Google Maps UI.
     logTracking('Observation send failed in content script', error)
+    // TODO: temporary debug – remove once website scraping is verified.
+    debugLastSend = `${new Date().toLocaleTimeString()} error`
+    renderDebugOverlay()
   }
 }
 
@@ -2144,6 +2481,8 @@ const scanAndRender = async () => {
   lastScanStartedAt = Date.now()
   rememberPlaceName()
   rememberBusinessCategory()
+  rememberWebsiteUrl()
+  renderDebugOverlay()
   if (!isReviewsTabActive()) {
     clearInjectedState()
     return
@@ -2283,6 +2622,9 @@ const scheduleNavigationScans = () => {
   latestPlaceName = undefined
   latestBusinessCategoryPlaceKey = ''
   latestBusinessCategory = undefined
+  latestWebsiteUrlPlaceKey = ''
+  latestWebsiteUrl = undefined
+  latestWebsiteChecked = false
   clearInjectedState()
   scheduleDeferredScans()
 }

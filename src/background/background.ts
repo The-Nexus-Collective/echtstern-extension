@@ -33,8 +33,8 @@ browser?.runtime.onMessage.addListener((message: ECHTSTERNMessage, _sender, send
     }
 
     void postObservation(message.payload)
-      .then((ok) => {
-        sendResponse({ ok })
+      .then((result) => {
+        sendResponse(result)
       })
       .catch((error: unknown) => {
         logTracking('Observation post failed in background', error)

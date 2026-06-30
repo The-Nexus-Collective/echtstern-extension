@@ -29,10 +29,29 @@ export const isGoogleMapsPlaceUrl = (href: string): boolean => {
 export const hasReviewsTabLabel = (activeTabLabels: readonly string[]): boolean =>
   activeTabLabels.some((label) => REVIEWS_LABEL_PATTERN.test(label))
 
+// Whether any active tab was detected at all (the place panel exposes the selected
+// tab as `button[role="tab"][aria-selected="true"]`). Used to veto the URL marker.
+export const hasActiveTabLabel = (activeTabLabels: readonly string[]): boolean =>
+  activeTabLabels.some((label) => label.trim().length > 0)
+
 export interface ReviewsContextInput {
   activeTabLabels: readonly string[]
   href: string
 }
 
-export const isReviewsContext = ({ activeTabLabels, href }: ReviewsContextInput): boolean =>
-  hasReviewsTabLabel(activeTabLabels) || (isGoogleMapsPlaceUrl(href) && isReviewsViewUrl(href))
+export const isReviewsContext = ({ activeTabLabels, href }: ReviewsContextInput): boolean => {
+  if (hasReviewsTabLabel(activeTabLabels)) {
+    return true
+  }
+
+  // An active tab was detected, but it is not the reviews tab (e.g. "Übersicht",
+  // "Info", "Speisekarte", …). Do not trust the URL marker in that case: Google keeps
+  // the `!9m1!1b1` reviews marker in the URL when switching to another place, which
+  // would otherwise emit bogus observations from a non-reviews tab.
+  if (hasActiveTabLabel(activeTabLabels)) {
+    return false
+  }
+
+  // No active tab detected yet (e.g. mid navigation) → fall back to the URL marker.
+  return isGoogleMapsPlaceUrl(href) && isReviewsViewUrl(href)
+}
