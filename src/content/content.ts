@@ -856,8 +856,16 @@ const renderDebugOverlay = () => {
       ]
     : ['payload: (noch nichts vorbereitet)']
 
+  const extensionVersion = (() => {
+    try {
+      return browser?.runtime?.getManifest?.().version ?? '?'
+    } catch {
+      return '?'
+    }
+  })()
+
   overlay.textContent = [
-    'ECHTSTERN DEBUG (Cache)',
+    `ECHTSTERN DEBUG v${extensionVersion} (Cache)`,
     `tab: ${reviewsActive ? 'Rezensionen' : 'Übersicht/andere'}`,
     `placeKey (live): ${currentPlaceKey || '—'}`,
     `placeKey (last): ${latestPlaceKey || '—'}`,
@@ -1119,8 +1127,11 @@ const rememberBusinessCategory = (placeKey = findPlaceKey()): string | undefined
     return undefined
   }
 
-  const visibleBusinessCategory = findVisibleBusinessCategory()
   const urlBusinessCategory = findBusinessCategoryFromUrl()
+  // The visible (DOM) category can still belong to the previous place during a profile
+  // switch, so only trust it once the panel has settled (URL/DOM name consistent). The
+  // URL-derived category is always tied to the current place and stays trusted.
+  const visibleBusinessCategory = isPlaceContextConsistent() ? findVisibleBusinessCategory() : undefined
   const currentBusinessCategory = visibleBusinessCategory ?? urlBusinessCategory
   if (currentBusinessCategory) {
     if (currentBusinessCategory !== latestBusinessCategory) {
@@ -1142,23 +1153,28 @@ const rememberWebsiteUrl = (placeKey = findPlaceKey()): WebsiteCapture => {
     return { websiteChecked: false }
   }
 
-  const currentWebsiteUrl = findVisibleWebsiteUrl()
+  // Only read the website from a settled panel. During a profile switch the previous
+  // place's website row can still be in the DOM; capturing it would attribute the wrong
+  // website to the new place (and it would then stick on the server via COALESCE).
+  if (isPlaceContextConsistent()) {
+    const currentWebsiteUrl = findVisibleWebsiteUrl()
 
-  if (currentWebsiteUrl) {
-    if (currentWebsiteUrl !== latestWebsiteUrl) {
-      debugWebsiteCapturedAt = new Date().toLocaleTimeString()
+    if (currentWebsiteUrl) {
+      if (currentWebsiteUrl !== latestWebsiteUrl) {
+        debugWebsiteCapturedAt = new Date().toLocaleTimeString()
+      }
+      latestWebsiteUrlPlaceKey = placeKey
+      latestWebsiteUrl = currentWebsiteUrl
+      latestWebsiteChecked = true
+    } else if (isOverviewInfoLoaded()) {
+      // Overview is loaded but no website link exists → confirmed "checked, no website".
+      // Never drop a real URL already captured for this place.
+      if (!latestWebsiteChecked || latestWebsiteUrlPlaceKey !== placeKey) {
+        debugWebsiteCapturedAt = new Date().toLocaleTimeString()
+      }
+      latestWebsiteUrlPlaceKey = placeKey
+      latestWebsiteChecked = true
     }
-    latestWebsiteUrlPlaceKey = placeKey
-    latestWebsiteUrl = currentWebsiteUrl
-    latestWebsiteChecked = true
-  } else if (isOverviewInfoLoaded()) {
-    // Overview is loaded but no website link exists → confirmed "checked, no website".
-    // Never drop a real URL already captured for this place.
-    if (!latestWebsiteChecked || latestWebsiteUrlPlaceKey !== placeKey) {
-      debugWebsiteCapturedAt = new Date().toLocaleTimeString()
-    }
-    latestWebsiteUrlPlaceKey = placeKey
-    latestWebsiteChecked = true
   }
 
   if (latestWebsiteUrlPlaceKey !== placeKey) {
